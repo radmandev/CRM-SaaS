@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { AppError, notFound, unauthenticated } from "./errors";
@@ -15,7 +16,7 @@ type RouteContext = { params: Promise<Params> };
 
 type Handler<C, B, Q> = (a: { req: Request; ctx: C; body: B; query: Q; params: Params }) => Promise<unknown>;
 
-type Options<B, Q> = { permission?: Permission; body?: z.ZodType<B>; query?: z.ZodType<Q> };
+type Options<B, Q> = { permission?: Permission; body?: z.ZodType<B>; query?: z.ZodType<Q>; idempotent?: boolean };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const API_LIMIT_PER_MINUTE = 600; // SEC-14
@@ -34,6 +35,7 @@ function problem(err: AppError, requestId: string, t: ReturnType<typeof translat
     code: err.code,
     requestId,
     ...(err.errors.length ? { errors: err.errors } : {}),
+    ...err.extra,
   };
   return Response.json(body, { status: err.status, headers: { "content-type": "application/problem+json", "x-request-id": requestId, ...err.headers } });
 }
@@ -89,10 +91,15 @@ async function run<C extends UserCtx | null, B, Q>(
 
     const t = translator(locale);
     let body = undefined as B;
+    let rawBody = "";
     if (opts.body) {
-      const json = await req.json().catch(() => {
+      rawBody = await req.text();
+      let json: unknown;
+      try {
+        json = JSON.parse(rawBody);
+      } catch {
         throw new AppError(400, "MALFORMED_JSON", "Request body must be valid JSON");
-      });
+      }
       const parsed = opts.body.safeParse(json);
       if (!parsed.success) throw new AppError(422, "VALIDATION_FAILED", "Validation failed", fieldErrors(parsed.error, t));
       body = parsed.data;
@@ -104,7 +111,8 @@ async function run<C extends UserCtx | null, B, Q>(
       query = parsed.data;
     }
 
-    const result = await handler({ req, ctx: ctx as C, body, query, params });
+    const exec = () => handler({ req, ctx: ctx as C, body, query, params });
+    const result = opts.idempotent && kind === "tenant" ? await idempotent(ctx as Ctx, req, rawBody, exec) : await exec();
     if (result instanceof Response) return ((status = result.status), result);
     const reply = result instanceof Reply ? result : result === undefined ? new Reply(204, null) : new Reply(200, result);
     status = reply.status;
@@ -122,6 +130,41 @@ async function run<C extends UserCtx | null, B, Q>(
   } finally {
     const tenantId = ctx && "tenant" in ctx ? (ctx as Ctx).tenant.id : undefined;
     logger.info({ requestId, method: req.method, path: new URL(req.url).pathname, status, ms: Date.now() - started, userId: ctx?.user.id, tenantId }, "request");
+  }
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 3_600_000;
+
+/**
+ * §20.3 IDM-01..03. The key row is claimed before the handler runs, so two identical requests can never both
+ * execute; the stored response is replayed afterwards. Failed requests release the key so they can be retried.
+ * Deviation from IDM-04 (same transaction): a crash between the business commit and the completion update
+ * leaves the key IN_PROGRESS, so retries get 409 until it expires (24 h). That fails closed: never a duplicate.
+ */
+async function idempotent(ctx: Ctx, req: Request, rawBody: string, exec: () => Promise<unknown>): Promise<unknown> {
+  const key = req.headers.get("idempotency-key");
+  if (!key) return exec();
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(key)) throw new AppError(400, "INVALID_IDEMPOTENCY_KEY", "Invalid Idempotency-Key");
+  const route = `${req.method} ${new URL(req.url).pathname}`;
+  const requestHash = createHash("sha256").update(`${route}\n${rawBody}`).digest("hex");
+  try {
+    await ctx.db.idempotencyKey.create({ data: { tenantId: ctx.tenant.id, userId: ctx.user.id, key, route, requestHash, expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS) } });
+  } catch (err) {
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) throw err;
+    const existing = await ctx.db.idempotencyKey.findFirst({ where: { userId: ctx.user.id, key } });
+    if (!existing) throw err;
+    if (existing.requestHash !== requestHash) throw new AppError(422, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was used for a different request");
+    if (existing.status === "IN_PROGRESS") throw new AppError(409, "REQUEST_IN_PROGRESS", "The original request is still being processed");
+    return Response.json(existing.responseBody, { status: existing.responseStatus ?? 200, headers: { "idempotent-replayed": "true" } });
+  }
+  try {
+    const result = await exec();
+    const reply = result instanceof Reply ? result : new Reply(200, result ?? null);
+    await ctx.db.idempotencyKey.updateMany({ where: { userId: ctx.user.id, key }, data: { status: "COMPLETED", responseStatus: reply.status, responseBody: reply.body as Prisma.InputJsonValue } });
+    return reply;
+  } catch (err) {
+    await ctx.db.idempotencyKey.deleteMany({ where: { userId: ctx.user.id, key, status: "IN_PROGRESS" } });
+    throw err;
   }
 }
 

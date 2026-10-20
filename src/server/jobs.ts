@@ -29,12 +29,17 @@ const handlers = {
     const { to, subject } = job.payload as unknown as Email;
     await prisma.job.update({ where: { id: job.id }, data: { payload: { to, subject, bodyRemoved: true } } });
   },
+  "bookings.complete": async () => {
+    const { completeFinishedBookings } = await import("@/modules/bookings/service"); // lazy: avoids an import cycle
+    await completeFinishedBookings();
+  },
   "maintenance.cleanup": async () => {
     const now = new Date();
     await prisma.session.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 7 * DAY) } } });
     await prisma.verification.deleteMany({ where: { expiresAt: { lt: now } } });
     await prisma.rateLimitBucket.deleteMany({ where: { windowStart: { lt: new Date(now.getTime() - DAY) } } });
     await prisma.job.deleteMany({ where: { status: "SUCCEEDED", updatedAt: { lt: new Date(now.getTime() - 30 * DAY) } } });
+    await prisma.idempotencyKey.deleteMany({ where: { expiresAt: { lt: now } } });
   },
 } satisfies Record<string, (job: Job) => Promise<void>>;
 
@@ -66,11 +71,12 @@ export async function runJob(job: Job): Promise<void> {
 }
 
 /** One worker tick: recover stuck jobs, schedule recurring ones, run what is due. Returns jobs processed. */
-export async function tick(workerId: string, batch = 10): Promise<number> {
+export async function tick(workerId: string, batch = 10, types?: JobType[]): Promise<number> {
   await recoverStuckJobs(600);
   const day = new Date().toISOString().slice(0, 10);
   await enqueue(prisma, "maintenance.cleanup", {}, { dedupeKey: `maintenance.cleanup:${day}` }); // JOB-05
-  const jobs = await claimJobs(workerId, batch);
+  await enqueue(prisma, "bookings.complete", {}, { dedupeKey: `bookings.complete:${day}` });
+  const jobs = await claimJobs(workerId, batch, types);
   for (const job of jobs) await runJob(job);
   return jobs.length;
 }

@@ -24,6 +24,11 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // Underscore-prefixed bindings are deliberately unused (e.g. stripping a field via destructuring).
+    files: ["src/**/*.{ts,tsx}"],
+    rules: { "@typescript-eslint/no-unused-vars": ["warn", { varsIgnorePattern: "^_", argsIgnorePattern: "^_" }] },
+  },
+  {
     // SEC-04: no raw HTML injection.
     files: ["src/**/*.tsx"],
     rules: { "react/no-danger": "error" },

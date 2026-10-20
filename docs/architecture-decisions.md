@@ -72,6 +72,38 @@ The Prisma client and the Better Auth instance are created on first use (`prisma
 ### ADR-15 End-to-end tests in a container — Accepted
 Playwright has no Chromium build for macOS 12, so E2E runs in `mcr.microsoft.com/playwright:v1.64.1-noble` against the host app. It runs serially with generous timeouts, because the development machine is slow. See README.
 
+## Phase 2 decisions
+
+### ADR-16 Field encryption — Accepted (KMS: Review, D-18)
+AES-256-GCM per value (`v1:<keyId>:<nonce>:<ciphertext+tag>`), keys from `ENCRYPTION_KEYS` with `ENCRYPTION_ACTIVE_KEY_ID`, and an HMAC-SHA-256 lookup hash keyed by `HMAC_KEY` (SEC-10..12, CRM-07/08). Encrypted: travel document numbers (traveler profiles and booking passenger snapshots) and supplier IBANs. A passenger snapshot copies the traveler's ciphertext rather than decrypting and re-encrypting it. The re-encryption job for key rotation (SEC-11) is not built yet; `needsReencryption()` identifies the candidates.
+
+### ADR-17 Reference data — Accepted (D-09 resolved)
+Airports come from github.com/mwgg/Airports (MIT), filtered to the 7,522 entries with a valid IATA code and IANA timezone, and committed as `prisma/data/airports.json`. Airlines are a curated list of 61 carriers (`prisma/data/airlines.json`). Flight segments must use known airports; carrier codes are format-checked only, so unlisted airlines still work.
+
+### ADR-18 Scope of tenant-wide reference records — Accepted
+Suppliers and products have no branch. Any granted scope of `supplier:read` / `supplier:write` / `product:write` applies to all of them, because a BRANCH scope cannot apply to records without a branch (§4.6). This is a refinement of the §4.7 matrix.
+
+### ADR-19 Sensitive reveals — Accepted
+- Travel document numbers require `traveldoc:reveal` within its scope. OWN means the customer's owner for profiles and the booking's owner for passengers.
+- Supplier IBANs can be revealed by holders of `supplier:write` with ALL scope (owner, admin, accountant) and by branch managers. The spec defines no IBAN permission, so this rule is my proposal: **Review**.
+- Every reveal is audit-logged and served with `Cache-Control: no-store`.
+
+### ADR-20 Booking money model — Accepted (Phase 3 review)
+- Item amounts are **line totals** in the **booking currency**. `quantity` is informational.
+- Per-item supplier currency and FX are deferred to supplier bills (Phase 3).
+- Tax is computed per line and rounded half-up; tax-inclusive pricing is snapshotted from the tenant setting at booking creation.
+- Cancellation and amendment fees are added to totals untaxed; their VAT treatment is decided at invoicing (Phase 3).
+- `paidTotal` stays 0 until payments exist.
+
+### ADR-21 Amendments — Accepted
+Confirmed and issued bookings refuse direct edits (`AMENDMENT_REQUIRED`). An amendment is a stored list of operations (`updateItem`, `addItem`, `updatePassenger`) with fees; applying it re-validates every operation and runs them in one transaction, and the stored diff and price difference are kept. The UI exposes price, cost and confirmation-number changes; the API supports all three operation types.
+
+### ADR-22 Idempotency — Accepted, deviation from IDM-04 (Review)
+`Idempotency-Key` is accepted on the create endpoints (bookings, booking items, customers, suppliers, products, amendments). The key row is claimed before the handler runs and completed afterwards, not inside the business transaction (Prisma has no nested interactive transactions). The failure mode is safe: after a crash between the business commit and the key update, retries get 409 until the key expires (24 h). A duplicate can never be created.
+
+### ADR-23 Test parallelism — Accepted
+Vitest runs with `maxWorkers: 2`. Each worker hashes many Argon2id passwords, and more parallelism starved the 4-core development machine. Recurring-job tests use a job-type filter on `tick()`, so they never consume other test files' email jobs.
+
 ## Deferred to later phases (defaults from Appendix A stand)
 | Decision | Phase | Note |
 |---|---|---|
@@ -81,7 +113,8 @@ Playwright has no Chromium build for macOS 12, so E2E runs in `mcr.microsoft.com
 | D-06 Email provider | 3 | Phase 1 uses SMTP adapter; Mailpit locally |
 | D-07 Plans/billing | 6 | Plans seeded with placeholder limits; manual billing |
 | D-08 Breached-password API | — | Bundled list only |
-| D-09…D-20 | 2–6 | Defaults in SPEC.md Appendix A |
+| D-09 | 2 | **Resolved**: ADR-17 |
+| D-10…D-20 | 3–6 | Defaults in SPEC.md Appendix A |
 
 ## Phase 1 scope trims (recorded so they are not mistaken for done)
 - Team / TeamMember, IdempotencyKey and Notification tables are not created yet: nothing in Phase 1 reads or writes them. They arrive with their first consumer (Phase 2–4).

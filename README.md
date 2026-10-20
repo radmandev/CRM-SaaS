@@ -6,7 +6,7 @@ Multi-tenant platform for travel agencies, starting with Saudi Arabia (Arabic RT
 - **Architecture decisions:** [docs/architecture-decisions.md](docs/architecture-decisions.md)
 - **Build status:** [BUILD_STATUS.md](BUILD_STATUS.md) lists what is implemented and verified, and what is not.
 
-Current state: **Phase 1 (foundation)**, covering signup, authentication, tenant isolation, agency settings, users and roles, and the dashboard. Bookings, finance, AI and integrations are later phases.
+Current state: **Phases 1–2 done.** Phase 1 covers signup, authentication, tenant isolation, agency settings, users and roles, and the dashboard. Phase 2 covers customers with encrypted travel documents, suppliers, products, and bookings with their full lifecycle, passengers, amendments and itineraries. Quotations, invoicing and payments (Phase 3), AI and integrations come later.
 
 ## Stack
 

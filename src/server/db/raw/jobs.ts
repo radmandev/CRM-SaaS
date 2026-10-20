@@ -1,13 +1,14 @@
 import { prisma } from "@/server/db";
-import type { Job } from "@/generated/prisma/client";
+import { Prisma, type Job } from "@/generated/prisma/client";
 
 /** JOB-02: claim due jobs; SKIP LOCKED makes concurrent workers safe. */
-export function claimJobs(workerId: string, limit: number): Promise<Job[]> {
+export function claimJobs(workerId: string, limit: number, types?: string[]): Promise<Job[]> {
+  const typeFilter = types ? Prisma.sql`AND "type" = ANY(${types})` : Prisma.empty;
   return prisma.$queryRaw<Job[]>`
     UPDATE "job" SET "status" = 'RUNNING', "lockedAt" = now(), "lockedBy" = ${workerId},
       "attempts" = "attempts" + 1, "updatedAt" = now()
     WHERE "id" IN (
-      SELECT "id" FROM "job" WHERE "status" = 'QUEUED' AND "runAt" <= now()
+      SELECT "id" FROM "job" WHERE "status" = 'QUEUED' AND "runAt" <= now() ${typeFilter}
       ORDER BY "runAt" LIMIT ${limit} FOR UPDATE SKIP LOCKED)
     RETURNING *`;
 }

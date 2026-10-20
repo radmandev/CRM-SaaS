@@ -1,4 +1,5 @@
 import { PrismaPg } from "@prisma/adapter-pg";
+import { readFileSync } from "node:fs";
 import { PrismaClient } from "../src/generated/prisma/client";
 
 // MIG-05: idempotent global reference data. Plan values are placeholders until D-07 is decided.
@@ -19,4 +20,15 @@ const plans = [
 
 for (const p of plans) await prisma.plan.upsert({ where: { code: p.code }, update: { nameEn: p.nameEn, nameAr: p.nameAr, entitlements: p.entitlements }, create: p });
 console.log(`Seeded ${plans.length} plans`);
+
+// SVC-03 reference data. Airports: github.com/mwgg/Airports (MIT). Airlines: curated list (D-09).
+const airports = JSON.parse(readFileSync(new URL("./data/airports.json", import.meta.url), "utf8")) as [string, string, string, string, string][];
+for (let i = 0; i < airports.length; i += 1000)
+  await prisma.airport.createMany({
+    data: airports.slice(i, i + 1000).map(([code, name, city, country, timezone]) => ({ code, name, city, country, timezone })),
+    skipDuplicates: true,
+  });
+const airlines = JSON.parse(readFileSync(new URL("./data/airlines.json", import.meta.url), "utf8")) as [string, string, string][];
+await prisma.airline.createMany({ data: airlines.map(([code, nameEn, nameAr]) => ({ code, nameEn, nameAr })), skipDuplicates: true });
+console.log(`Seeded ${airports.length} airports, ${airlines.length} airlines`);
 await prisma.$disconnect();

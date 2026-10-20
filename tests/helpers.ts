@@ -48,7 +48,7 @@ export function cookieFrom(headers: Headers): string {
 
 /** Run queued email jobs and return what the fake provider "sent" to this address. */
 export async function sentTo(email: string): Promise<Email[]> {
-  const jobs = await prisma.job.findMany({ where: { type: "email.send", status: "QUEUED" } });
+  const jobs = await prisma.job.findMany({ where: { type: "email.send", status: "QUEUED" }, orderBy: { createdAt: "asc" } }); // outbox order = send order
   for (const job of jobs.filter((j) => (j.payload as { to?: string }).to === email)) {
     const claimed = await prisma.job.updateMany({ where: { id: job.id, status: "QUEUED" }, data: { status: "RUNNING", attempts: { increment: 1 } } });
     if (claimed.count) await runJob({ ...job, attempts: job.attempts + 1 });

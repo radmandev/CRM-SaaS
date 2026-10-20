@@ -1,8 +1,116 @@
-# Build Status — Phase 1 (Application Foundation)
+# Build Status
 
-Updated: 2026-10-20. Source of truth: [SPEC.md](SPEC.md) §27 Phase 1. Decisions: [docs/architecture-decisions.md](docs/architecture-decisions.md).
+Updated: 2026-10-20. Source of truth: [SPEC.md](SPEC.md) §27. Decisions: [docs/architecture-decisions.md](docs/architecture-decisions.md) (ADR-01..23).
+
+| Phase | Status |
+|---|---|
+| 1. Foundation | Done (commit `ced22ce`); report below |
+| 2. Customers, suppliers, services, bookings | **Done and verified locally** (this report) |
+| 3–6 | Not started |
+
+# Phase 2 report (customers, suppliers, travel services, bookings)
+
+**Summary:** everything below was verified locally:
+- typecheck and lint;
+- 237 unit and integration tests against real PostgreSQL, stable over consecutive runs;
+- two browser journeys on desktop and mobile with axe scans;
+- a production build without secrets;
+- Docker images, with both migrations and the seed applied to an empty database.
+
+The CI workflow still has not run, because the repository has no remote.
+
+## 1. Implemented requirements
+
+| Area | Requirement IDs | Notes |
+|---|---|---|
+| Customers | §6.1, CRM-01 (duplicate warning + "create anyway"), CRM-02, CRM-03 (merge), CRM-04, CRM-12 (timeline) | CRM-05 (balance) needs invoices (Phase 3) |
+| Contacts, travelers | §6.2 (single primary), §6.3, CRM-06 | Names stored as in the passport (Latin, upper-case) |
+| Travel documents | CRM-07 (encrypted, masked, permission-gated reveal, audited), CRM-08 (HMAC lookup), CRM-09, CRM-10 (dashboard warnings) | Scans (`scanDocumentId`) arrive with document management (Phase 4) |
+| Interactions | §6.5, CRM-11 (manual log) | |
+| Suppliers | §9.1 (IBAN encrypted + ISO 13616), §9.2, SUP-01 (commission rules + most-specific prefill) | SUP-02..06 need supplier bills and payments (Phase 3) |
+| Catalog | §7.2, SVC-04, SVC-05 (snapshot on use), SVC-06 (package components) | |
+| Service details | SVC-01, SVC-02 (`detailsVersion`), SVC-03 (airports and airlines seeded), SVC-07 (margin, hidden from roles without `report:financial` unless they own the booking), SVC-08 partially (discount > price rejected) | Discount-approval threshold (QT-10) is Phase 3 |
+| Bookings | §8.1, §8.2, BKG-01..06, BKG-07 (UI states "recorded manually"), BKG-08..12, BKG-13 (signed public link; PDF is Phase 3), BKG-14..16, BKG-18..23 | BKG-17 (release-hold task) needs tasks (Phase 4); BKG-15/19 invoice and credit-note follow-ups are Phase 3 |
+| Global search, dashboard | §24.2 search; §15.1 Phase 2 tiles (departures, returns, holds < 48 h, passport warnings, bookings this week) | |
+| Idempotency | IDM-01..03, IDM-05 n/a | Deviation from IDM-04, see ADR-22 |
+| Scheduled jobs | §8.2 completion job | Daily, deduplicated |
+
+## 2. Key files
+
+| Purpose | Path |
+|---|---|
+| Phase 2 schema + migration (pg_trgm, CHECK guards) | `prisma/schema.prisma`, `prisma/migrations/*_phase2_crm_bookings/` |
+| Reference data | `prisma/data/airports.json` (MIT), `prisma/data/airlines.json` |
+| Field encryption | `src/server/crypto.ts` |
+| Money (decimal only) | `src/server/money.ts` |
+| Data scope, idempotency | `src/server/scope.ts`, `src/server/api.ts` |
+| Booking rules (pure) / service | `src/modules/bookings/rules.ts`, `src/modules/bookings/service.ts` |
+| CRM, suppliers/catalog, search | `src/modules/{crm,suppliers,search}/service.ts` |
+| Shared schemas | `src/lib/schemas-travel.ts`, `src/lib/travel.ts`, `src/lib/form-schemas.ts` |
+| Pages | `src/app/(app)/{customers,suppliers,products,bookings,search}/`, `src/app/itinerary/[token]/` |
+
+## 3. Commands run and their results (2026-10-20)
+
+| Command | Result |
+|---|---|
+| `prisma migrate dev` / `migrate diff` | Migration applied; diff empty (39 composite FKs, trigram indexes kept) |
+| `prisma db seed` | 4 plans, 7,522 airports, 61 airlines |
+| `tsc --noEmit`, `eslint` | Clean |
+| `vitest run` (repeated) | **13 files, 237 tests passed** (191 integration, 46 unit) |
+| `next build` with `.env` removed | Succeeds |
+| Playwright E2E in the official container (desktop + Pixel 7) | **4 passed**: onboarding and the full booking journey (customer → encrypted passport → reveal → flight + hotel → passenger → confirmations → confirm → ticket → public itinerary in Arabic without passport data); no serious or critical axe violations on any visited page |
+| `docker build` runtime + migrate; migrate on an empty DB; run web + worker | 2 migrations applied, seed complete, health ok, pages 200, worker started |
+| `npm audit --omit=dev` | 0 vulnerabilities |
+
+## 4. Tests added in Phase 2
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `integration/crm` | 11 | Codes, normalization and tags; duplicate warning and override; branch scope (404 outside the branch, 403 when creating there); optimistic locking; search; encryption verified with direct SQL; masked output; reveal scope (owner yes, branch colleague no, accountant no) and its audit; no plaintext in audit; HMAC lookup within scope; single primary contact; timeline; merge moves every reference |
+| `integration/bookings` | 20 | References; idempotency (replay, reused key, 8 parallel requests → 1 booking); duplicate warning; FX snapshot; airport validation; derived dates and description; tax and totals; commission rule precedence and override; discount guard; margin hidden from viewers; full lifecycle with deadline, confirmation and ticket rules; status history; ticket uniqueness; `AMENDMENT_REQUIRED` after confirm; infant and lead rules; passport snapshot encrypted + reveal permission; cancellation fees in totals; booking cancel locks the booking; amendments atomic (bad operation → nothing changes); itinerary order; signed public link (tamper → rejected, no passport data); search by reference/PNR/surname; dashboard tiles; completion job; SALES own-scope write rule |
+| `integration/tenant-isolation` (extended) | 9 | Discovers **every** route and fills **every** path parameter (`[id]`, `[itemId]`, `[passengerId]`, `[amendmentId]`, …) with tenant A's real ids. All parameterized routes return 404 to tenant B; every table of tenant A is identical before and after; list and search routes searched with words that exist only in A's data leak nothing |
+| `integration/authorization` (extended) | 119 | +8 Phase 2 permissions × 7 roles |
+| `unit/booking-rules`, `unit/travel` | 27 | Transitions, derived status, rounding (incl. 3-decimal currencies), inclusive/exclusive tax, totals with fees, itinerary ordering, ID/Iqama/passport/IBAN/pax-type rules, AES-GCM tamper detection and old-key decryption, HMAC normalization, detail schemas, change-set regression (below) |
+
+## 5. Bugs found and fixed during Phase 2 verification
+
+1. **Silent data reset in item edits:** Zod 4 applies `.default()` inside `.partial()`, so changing one price reset quantity, tax basis and pricing model. Fixed with a default-free change schema; regression test added.
+2. **Customer tags wiped on save:** a disabled tags field was never submitted. Fixed; tags are editable and also accepted comma-separated.
+3. **Every form broken on plain HTTP:** `crypto.randomUUID()` only exists on HTTPS or localhost. Fixed with a fallback; found by the E2E container.
+4. **Two sources of intermittent test failures:** one test file's `tick()` consumed other files' email jobs, and the email-order helper was nondeterministic. Both were fixed in the test code.
+
+## 6. Known issues and deviations (need review)
+
+1. **IDM-04:** idempotency keys are completed after the business transaction, not inside it. The failure mode is safe: a 409 until the key expires, never a duplicate (ADR-22).
+2. **IBAN reveal rule** is my interpretation; the spec defines no permission for it (ADR-19).
+3. **Money model:** item amounts are line totals in the booking currency, with no per-item supplier currency yet. Fees are untaxed until invoicing (ADR-20).
+4. **`PATCH /customers/{id}` replaces the full representation** (as the form sends it). Omitted optional fields are cleared.
+5. **The amendment UI** covers price, cost and confirmation-number changes; adding services and correcting passengers through amendments is API-only for now.
+6. **Not built yet (with their dependencies):**
+   - Key-rotation re-encryption job (SEC-11).
+   - Release-hold tasks (BKG-17, Phase 4).
+   - Invoice and credit-note follow-ups (Phase 3).
+   - Itinerary PDF (Phase 3).
+   - Discount approval (QT-10, Phase 3).
+7. All Phase 1 items in the report below still apply.
+
+## 7. Phase 2 acceptance criteria (SPEC §27)
+
+| Criterion | Status |
+|---|---|
+| Staff record a multi-service booking end to end, with correct statuses and history and no simulated supplier interaction | **Met.** Integration lifecycle test plus the E2E journey; the UI labels every supplier step as recorded manually |
+| Passport numbers encrypted in the DB (verified with direct SQL), masked in UI/API, reveal permission-gated and audited | **Met** (`integration/crm`, `integration/bookings`, E2E) |
+| Duplicate submissions with the same Idempotency-Key create exactly one booking | **Met.** 8 parallel requests with one key create 1 booking |
+
+## 8. Run locally
+
+The commands are unchanged from Phase 1 (§9 below). After pulling, run `npm run db:migrate && npm run db:seed`; the seed now loads airports and airlines. `.env` needs `ENCRYPTION_KEYS`, `ENCRYPTION_ACTIVE_KEY_ID` and `HMAC_KEY`; see `.env.example` for how to generate them.
+
+---
 
 **Summary:** Phase 1 is implemented and verified locally. Checks run: typecheck, lint, 126 unit and integration tests against real PostgreSQL, a browser E2E journey on desktop and mobile with axe scans, a production build without secrets, and a Docker image smoke test. The CI workflow exists but has not run, because the repository has no remote. Phases 2–6 have not started.
+
+# Phase 1 report (application foundation) — commit ced22ce
 
 ## 1. Implemented requirements
 

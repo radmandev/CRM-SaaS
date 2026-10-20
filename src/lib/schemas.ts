@@ -206,22 +206,3 @@ export const listQuery = z.strictObject({
   cursor: z.string().max(500).optional(),
   q: z.string().trim().max(100).optional(),
 });
-
-/** Schemas the browser form component can look up by name (client-side validation, FR-05). */
-export const formSchemas = {
-  signup: signupSchema,
-  login: loginSchema,
-  forgotPassword: forgotPasswordSchema,
-  resetPassword: resetPasswordSchema,
-  changePassword: changePasswordSchema,
-  profile: profileSchema,
-  agency: agencySchema,
-  branch: branchSchema,
-  taxRate: taxRateSchema,
-  exchangeRate: exchangeRateSchema,
-  numbering: numberingSchema,
-  invitation: invitationSchema,
-  acceptInvitation: acceptInvitationSchema,
-  memberUpdate: memberUpdateSchema,
-} as const;
-export type FormSchemaName = keyof typeof formSchemas;

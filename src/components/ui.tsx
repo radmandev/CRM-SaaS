@@ -79,3 +79,28 @@ export function SearchBox({ action, defaultValue, label, children }: { action: s
     </form>
   );
 }
+
+const TONE: Record<string, string> = {
+  DRAFT: "border-line text-muted",
+  ON_HOLD: "border-amber-400 text-amber-800 dark:text-amber-300",
+  HELD: "border-amber-400 text-amber-800 dark:text-amber-300",
+  ON_REQUEST: "border-amber-400 text-amber-800 dark:text-amber-300",
+  REQUESTED: "border-line text-muted",
+  CONFIRMED: "border-sky-400 text-sky-800 dark:text-sky-300",
+  ISSUED: "border-emerald-500 text-emerald-800 dark:text-emerald-300",
+  COMPLETED: "border-emerald-500 text-emerald-800 dark:text-emerald-300",
+  CANCELLED: "border-red-400 text-red-800 dark:text-red-300",
+  FAILED: "border-red-400 text-red-800 dark:text-red-300",
+};
+
+/** UX-07: status shown as text with color, never color alone. */
+export function StatusBadge({ status, label }: { status: string; label: string }) {
+  return <span className={`badge ${TONE[status] ?? ""}`}>{label}</span>;
+}
+
+/** Money formatted in the record's currency with Western digits (LOC-06). Values arrive as decimal strings. */
+export function Money({ value, currency, locale }: { value: string | number | null | undefined; currency: string; locale: "ar" | "en" }) {
+  if (value === null || value === undefined) return <span className="text-muted">—</span>;
+  const text = new Intl.NumberFormat(`${locale}-u-nu-latn`, { style: "currency", currency, currencyDisplay: "code" }).format(Number(value));
+  return <bdi dir="ltr" className="tabular-nums">{text}</bdi>;
+}

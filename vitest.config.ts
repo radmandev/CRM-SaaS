@@ -9,6 +9,8 @@ export default defineConfig({
     globalSetup: ["tests/global-setup.ts"],
     setupFiles: ["tests/env.ts"],
     testTimeout: 30_000,
+    // Each worker hashes many Argon2id passwords (19 MiB each); more workers than this starves a 4-core machine.
+    maxWorkers: 2,
     hookTimeout: 60_000,
   },
 });

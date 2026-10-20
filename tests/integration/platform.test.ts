@@ -256,7 +256,8 @@ describe("background jobs (JOB-01..06)", () => {
     await enqueue(prisma, "maintenance.cleanup", {}, { dedupeKey: key });
     await enqueue(prisma, "maintenance.cleanup", {}, { dedupeKey: key });
     expect(await prisma.job.count({ where: { dedupeKey: key } })).toBe(1);
-    expect(await tick(`test-${uniq()}`, 50)).toBeGreaterThan(0);
+    // Only scheduled job types: other test files run in parallel and wait for their own email jobs.
+    expect(await tick(`test-${uniq()}`, 50, ["maintenance.cleanup", "bookings.complete"])).toBeGreaterThan(0);
   });
 });
 

@@ -11,7 +11,7 @@ async function post(url: string, locale: Locale, body?: unknown, method = "POST"
 }
 
 /** Button for a single POST action. Destructive actions confirm first and state the consequence (FR-06). */
-export function ActionButton({ url, label, confirm, locale, variant = "secondary", body, method = "POST" }: { url: string; label: string; confirm?: string; locale: Locale; variant?: "secondary" | "danger"; body?: unknown; method?: "POST" | "PATCH" }) {
+export function ActionButton({ url, label, confirm, locale, variant = "secondary", body, method = "POST" }: { url: string; label: string; confirm?: string; locale: Locale; variant?: "secondary" | "danger"; body?: unknown; method?: "POST" | "PATCH" | "DELETE" }) {
   const t = useMemo(() => translator(locale), [locale]);
   const router = useRouter();
   const [pending, setPending] = useState(false);

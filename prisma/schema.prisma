@@ -1,4 +1,4 @@
-// Phase 1 schema. Conventions: SPEC.md §21.1, deviations in docs/architecture-decisions.md (ADR-03).
+// Schema. Conventions: SPEC.md §21.1, deviations in docs/architecture-decisions.md (ADR-03).
 // Tenant-owned models carry tenantId, @@unique([tenantId, id]) and composite FKs (TEN-01, TEN-05).
 // Their names are listed in src/server/db.ts (TENANT_MODELS); a test keeps that list in sync with this file.
 
@@ -230,6 +230,12 @@ model Tenant {
   documents       Document[]
   auditLogs       AuditLog[]
   jobs            Job[]
+  idempotencyKeys IdempotencyKey[]
+  customers       Customer[]
+  tags            Tag[]
+  suppliers       Supplier[]
+  products        Product[]
+  bookings        Booking[]
 
   @@map("tenant")
 }
@@ -251,6 +257,8 @@ model Branch {
 
   primaryForMembers Membership[]
   memberBranches    MembershipBranch[]
+  customers         Customer[]
+  bookings          Booking[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -274,7 +282,9 @@ model Membership {
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
 
-  branches MembershipBranch[]
+  branches       MembershipBranch[]
+  ownedCustomers Customer[]         @relation("CustomerOwner")
+  ownedBookings  Booking[]          @relation("BookingOwner")
 
   @@unique([tenantId, id])
   @@unique([tenantId, userId])
@@ -332,6 +342,9 @@ model TaxRate {
   active              Boolean     @default(true)
   createdAt           DateTime    @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime    @updatedAt @db.Timestamptz(3)
+
+  products     Product[]
+  bookingItems BookingItem[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -405,4 +418,676 @@ model AuditLog {
   @@index([tenantId, actorId, createdAt(sort: Desc)])
   @@index([tenantId, createdAt(sort: Desc)])
   @@map("audit_log")
+}
+
+// ═════════════════════════ Phase 2: CRM, suppliers, catalog, bookings ═════════════════════════
+
+enum CustomerType {
+  INDIVIDUAL
+  CORPORATE
+}
+
+enum LifecycleStage {
+  LEAD
+  ACTIVE
+  INACTIVE
+}
+
+enum DocType {
+  PASSPORT
+  NATIONAL_ID
+  IQAMA
+  VISA
+  OTHER
+}
+
+enum InteractionChannel {
+  CALL
+  EMAIL
+  WHATSAPP
+  SMS
+  MEETING
+  NOTE
+  OTHER
+}
+
+enum Direction {
+  IN
+  OUT
+}
+
+enum SupplierType {
+  AIRLINE
+  CONSOLIDATOR
+  HOTEL
+  HOTEL_WHOLESALER
+  DMC
+  TRANSFER
+  TOUR_OPERATOR
+  VISA_SERVICE
+  INSURANCE
+  OTHER
+}
+
+enum ServiceType {
+  FLIGHT
+  HOTEL
+  TRANSFER
+  TOUR
+  PACKAGE
+  VISA
+  INSURANCE
+  OTHER
+}
+
+enum PricingModel {
+  NET
+  COMMISSIONABLE
+}
+
+enum TaxBasis {
+  FULL_AMOUNT
+  SERVICE_FEE_ONLY
+}
+
+enum BookingStatus {
+  DRAFT
+  ON_HOLD
+  CONFIRMED
+  ISSUED
+  COMPLETED
+  CANCELLED
+}
+
+enum BookingItemStatus {
+  REQUESTED
+  ON_REQUEST
+  HELD
+  CONFIRMED
+  ISSUED
+  CANCELLED
+  FAILED
+}
+
+enum PaxType {
+  ADT
+  CHD
+  INF
+}
+
+enum AmendmentStatus {
+  DRAFT
+  APPLIED
+  CANCELLED
+}
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+// ───────────── Global reference data (§7.1 SVC-03) ─────────────
+
+model Airport {
+  code     String @id @db.Char(3)
+  name     String
+  city     String
+  country  String @db.Char(2)
+  timezone String
+
+  @@map("airport")
+}
+
+model Airline {
+  code   String @id @db.VarChar(2)
+  nameEn String
+  nameAr String
+
+  @@map("airline")
+}
+
+// ───────────── Idempotency (§20.3) ─────────────
+
+model IdempotencyKey {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  tenantId       String            @db.Uuid
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId         String            @db.Uuid
+  key            String
+  route          String
+  requestHash    String            @db.Char(64)
+  status         IdempotencyStatus @default(IN_PROGRESS)
+  responseStatus Int?
+  responseBody   Json?
+  createdAt      DateTime          @default(now()) @db.Timestamptz(3)
+  expiresAt      DateTime          @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, userId, key])
+  @@index([expiresAt])
+  @@map("idempotency_key")
+}
+
+// ───────────── CRM (§6) ─────────────
+
+model Customer {
+  id                 String         @id @default(uuid(7)) @db.Uuid
+  tenantId           String         @db.Uuid
+  tenant             Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  type               CustomerType
+  code               String
+  displayName        String
+  nameAr             String?
+  firstName          String?
+  lastName           String?
+  lifecycleStage     LifecycleStage @default(ACTIVE)
+  source             String?
+  ownerId            String?        @db.Uuid
+  owner              Membership?    @relation("CustomerOwner", fields: [tenantId, ownerId], references: [tenantId, id], onDelete: Restrict)
+  branchId           String         @db.Uuid
+  branch             Branch         @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  phone              String?
+  email              String?
+  gender             String?
+  dateOfBirth        DateTime?      @db.Date
+  nationality        String?        @db.Char(2)
+  vatNumber          String?
+  crNumber           String?
+  address            String?
+  creditLimit        Decimal?       @db.Decimal(18, 4)
+  paymentTermsDays   Int            @default(0)
+  preferredLocale    String         @default("ar")
+  marketingConsentAt DateTime?      @db.Timestamptz(3)
+  marketingSource    String?
+  notes              String?
+  mergedIntoId       String?        @db.Uuid
+  mergedInto         Customer?      @relation("CustomerMerge", fields: [tenantId, mergedIntoId], references: [tenantId, id], onDelete: Restrict)
+  merged             Customer[]     @relation("CustomerMerge")
+  version            Int            @default(1)
+  archivedAt         DateTime?      @db.Timestamptz(3)
+  createdById        String         @db.Uuid
+  createdAt          DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime       @updatedAt @db.Timestamptz(3)
+
+  contacts     CustomerContact[]
+  travelers    Traveler[]
+  interactions Interaction[]
+  tags         CustomerTag[]
+  bookings     Booking[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, code])
+  @@index([tenantId, phone])
+  @@index([tenantId, email])
+  @@index([tenantId, branchId, createdAt(sort: Desc)])
+  @@index([displayName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("customer")
+}
+
+model CustomerContact {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @db.Uuid
+  customerId       String   @db.Uuid
+  customer         Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  name             String
+  title            String?
+  phone            String?
+  email            String?
+  isPrimary        Boolean  @default(false)
+  receivesInvoices Boolean  @default(false)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, customerId])
+  @@map("customer_contact")
+}
+
+model Traveler {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  tenantId      String    @db.Uuid
+  customerId    String    @db.Uuid
+  customer      Customer  @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  title         String?
+  firstName     String
+  middleName    String?
+  lastName      String
+  nameAr        String?
+  gender        String?
+  dateOfBirth   DateTime? @db.Date
+  nationality   String?   @db.Char(2)
+  phone         String?
+  email         String?
+  preferences   Json?
+  frequentFlyer Json?
+  archivedAt    DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  documents  TravelDocument[]
+  passengers BookingPassenger[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, customerId])
+  @@index([lastName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("traveler")
+}
+
+// CRM-07/08: number is encrypted; numberHash (HMAC) allows lookup; last4 for masked display.
+model TravelDocument {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  tenantId       String    @db.Uuid
+  travelerId     String    @db.Uuid
+  traveler       Traveler  @relation(fields: [tenantId, travelerId], references: [tenantId, id], onDelete: Restrict)
+  type           DocType
+  numberEnc      String
+  numberHash     String    @db.Char(64)
+  numberLast4    String    @db.VarChar(4)
+  issuingCountry String?   @db.Char(2)
+  nationality    String?   @db.Char(2)
+  issueDate      DateTime? @db.Date
+  expiryDate     DateTime? @db.Date
+  holderName     String?
+  verifiedById   String?   @db.Uuid
+  verifiedAt     DateTime? @db.Timestamptz(3)
+  archivedAt     DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, numberHash])
+  @@index([tenantId, expiryDate])
+  @@map("travel_document")
+}
+
+model Interaction {
+  id         String             @id @default(uuid(7)) @db.Uuid
+  tenantId   String             @db.Uuid
+  customerId String             @db.Uuid
+  customer   Customer           @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  bookingId  String?            @db.Uuid
+  booking    Booking?           @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  channel    InteractionChannel
+  direction  Direction
+  subject    String?
+  body       String
+  occurredAt DateTime           @db.Timestamptz(3)
+  userId     String             @db.Uuid
+  createdAt  DateTime           @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, customerId, occurredAt(sort: Desc)])
+  @@map("interaction")
+}
+
+model Tag {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  tenantId  String        @db.Uuid
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  name      String
+  customers CustomerTag[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@map("tag")
+}
+
+model CustomerTag {
+  tenantId   String   @db.Uuid
+  customerId String   @db.Uuid
+  customer   Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  tagId      String   @db.Uuid
+  tag        Tag      @relation(fields: [tenantId, tagId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([customerId, tagId])
+  @@index([tenantId, tagId])
+  @@map("customer_tag")
+}
+
+// ───────────── Suppliers (§9) ─────────────
+
+model Supplier {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  tenantId         String       @db.Uuid
+  tenant           Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  type             SupplierType
+  code             String
+  nameEn           String
+  nameAr           String?
+  country          String?      @db.Char(2)
+  city             String?
+  address          String?
+  phone            String?
+  email            String?
+  website          String?
+  vatNumber        String?
+  crNumber         String?
+  defaultCurrency  String       @default("SAR") @db.Char(3)
+  paymentTermsDays Int          @default(0)
+  prepaid          Boolean      @default(false)
+  ibanEnc          String?
+  ibanLast4        String?      @db.VarChar(4)
+  iataCode         String?      @db.VarChar(3)
+  notes            String?
+  version          Int          @default(1)
+  archivedAt       DateTime?    @db.Timestamptz(3)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
+
+  contacts        SupplierContact[]
+  commissionRules CommissionRule[]
+  products        Product[]
+  bookingItems    BookingItem[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, code])
+  @@index([nameEn(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("supplier")
+}
+
+model SupplierContact {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @db.Uuid
+  supplierId String   @db.Uuid
+  supplier   Supplier @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Cascade)
+  name       String
+  role       String?
+  phone      String?
+  email      String?
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, supplierId])
+  @@map("supplier_contact")
+}
+
+model CommissionRule {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  tenantId    String       @db.Uuid
+  supplierId  String       @db.Uuid
+  supplier    Supplier     @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Cascade)
+  serviceType ServiceType?
+  productId   String?      @db.Uuid
+  product     Product?     @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+  ratePercent Decimal?     @db.Decimal(7, 4)
+  fixedAmount Decimal?     @db.Decimal(18, 4)
+  currency    String?      @db.Char(3)
+  validFrom   DateTime?    @db.Date
+  validTo     DateTime?    @db.Date
+  notes       String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, supplierId])
+  @@map("commission_rule")
+}
+
+// ───────────── Catalog (§7.2) ─────────────
+
+model Product {
+  id                String       @id @default(uuid(7)) @db.Uuid
+  tenantId          String       @db.Uuid
+  tenant            Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  type              ServiceType
+  code              String
+  nameEn            String
+  nameAr            String?
+  descriptionEn     String?
+  descriptionAr     String?
+  defaultSupplierId String?      @db.Uuid
+  defaultSupplier   Supplier?    @relation(fields: [tenantId, defaultSupplierId], references: [tenantId, id], onDelete: Restrict)
+  defaultCost       Decimal      @default(0) @db.Decimal(18, 4)
+  defaultSell       Decimal      @default(0) @db.Decimal(18, 4)
+  currency          String       @default("SAR") @db.Char(3)
+  taxRateId         String?      @db.Uuid
+  taxRate           TaxRate?     @relation(fields: [tenantId, taxRateId], references: [tenantId, id], onDelete: Restrict)
+  pricingModel      PricingModel @default(NET)
+  validFrom         DateTime?    @db.Date
+  validTo           DateTime?    @db.Date
+  active            Boolean      @default(true)
+  createdAt         DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime     @updatedAt @db.Timestamptz(3)
+
+  components      ProductComponent[] @relation("PackageComponents")
+  usedIn          ProductComponent[] @relation("ComponentOf")
+  commissionRules CommissionRule[]
+  bookingItems    BookingItem[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, code])
+  @@map("product")
+}
+
+model ProductComponent {
+  id                 String  @id @default(uuid(7)) @db.Uuid
+  tenantId           String  @db.Uuid
+  packageProductId   String  @db.Uuid
+  packageProduct     Product @relation("PackageComponents", fields: [tenantId, packageProductId], references: [tenantId, id], onDelete: Cascade)
+  componentProductId String  @db.Uuid
+  componentProduct   Product @relation("ComponentOf", fields: [tenantId, componentProductId], references: [tenantId, id], onDelete: Restrict)
+  quantity           Int     @default(1)
+
+  @@unique([tenantId, id])
+  @@unique([packageProductId, componentProductId])
+  @@map("product_component")
+}
+
+// ───────────── Bookings (§8) ─────────────
+
+model Booking {
+  id                 String        @id @default(uuid(7)) @db.Uuid
+  tenantId           String        @db.Uuid
+  tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  reference          String
+  customerId         String        @db.Uuid
+  customer           Customer      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  branchId           String        @db.Uuid
+  branch             Branch        @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  ownerId            String        @db.Uuid
+  owner              Membership    @relation("BookingOwner", fields: [tenantId, ownerId], references: [tenantId, id], onDelete: Restrict)
+  status             BookingStatus @default(DRAFT)
+  confirmedAt        DateTime?     @db.Timestamptz(3)
+  travelStartDate    DateTime?     @db.Date
+  travelEndDate      DateTime?     @db.Date
+  destinationSummary String?
+  currency           String        @db.Char(3)
+  exchangeRate       Decimal       @default(1) @db.Decimal(20, 10)
+  pricesIncludeTax   Boolean       @default(false)
+  sellTotal          Decimal       @default(0) @db.Decimal(18, 4)
+  costTotal          Decimal       @default(0) @db.Decimal(18, 4)
+  commissionTotal    Decimal       @default(0) @db.Decimal(18, 4)
+  taxTotal           Decimal       @default(0) @db.Decimal(18, 4)
+  grandTotal         Decimal       @default(0) @db.Decimal(18, 4)
+  paidTotal          Decimal       @default(0) @db.Decimal(18, 4)
+  balance            Decimal       @default(0) @db.Decimal(18, 4)
+  notes              String?
+  customerNotes      String?
+  version            Int           @default(1)
+  createdById        String        @db.Uuid
+  createdAt          DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(3)
+
+  items          BookingItem[]
+  passengers     BookingPassenger[]
+  history        BookingStatusHistory[]
+  amendments     BookingAmendment[]
+  itineraryNotes ItineraryNote[]
+  interactions   Interaction[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, travelStartDate])
+  @@index([tenantId, customerId])
+  @@index([tenantId, branchId, createdAt(sort: Desc)])
+  @@map("booking")
+}
+
+model BookingItem {
+  id                   String            @id @default(uuid(7)) @db.Uuid
+  tenantId             String            @db.Uuid
+  bookingId            String            @db.Uuid
+  booking              Booking           @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  serviceType          ServiceType
+  productId            String?           @db.Uuid
+  product              Product?          @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+  supplierId           String?           @db.Uuid
+  supplier             Supplier?         @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Restrict)
+  description          String
+  status               BookingItemStatus @default(REQUESTED)
+  startDate            DateTime          @db.Date
+  endDate              DateTime          @db.Date
+  optionDeadline       DateTime?         @db.Timestamptz(3)
+  supplierConfirmation String?
+  pnr                  String?
+  quantity             Int               @default(1)
+  costAmount           Decimal           @default(0) @db.Decimal(18, 4)
+  sellAmount           Decimal           @default(0) @db.Decimal(18, 4)
+  commissionAmount     Decimal           @default(0) @db.Decimal(18, 4)
+  serviceFeeAmount     Decimal           @default(0) @db.Decimal(18, 4)
+  discountAmount       Decimal           @default(0) @db.Decimal(18, 4)
+  taxRateId            String?           @db.Uuid
+  taxRate              TaxRate?          @relation(fields: [tenantId, taxRateId], references: [tenantId, id], onDelete: Restrict)
+  taxRateSnapshot      Json?
+  taxBasis             TaxBasis          @default(FULL_AMOUNT)
+  taxAmount            Decimal           @default(0) @db.Decimal(18, 4)
+  pricingModel         PricingModel      @default(NET)
+  details              Json
+  detailsVersion       Int               @default(1)
+  sortOrder            Int               @default(0)
+  createdAt            DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime          @updatedAt @db.Timestamptz(3)
+
+  passengers   BookingItemPassenger[]
+  cancellation BookingItemCancellation?
+
+  @@unique([tenantId, id])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, supplierId])
+  @@index([tenantId, status, optionDeadline])
+  @@index([tenantId, startDate])
+  @@map("booking_item")
+}
+
+model BookingPassenger {
+  id                  String             @id @default(uuid(7)) @db.Uuid
+  tenantId            String             @db.Uuid
+  bookingId           String             @db.Uuid
+  booking             Booking            @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  travelerId          String?            @db.Uuid
+  traveler            Traveler?          @relation(fields: [tenantId, travelerId], references: [tenantId, id], onDelete: Restrict)
+  paxType             PaxType
+  title               String?
+  firstName           String
+  middleName          String?
+  lastName            String
+  gender              String?
+  dateOfBirth         DateTime?          @db.Date
+  nationality         String?            @db.Char(2)
+  docType             DocType?
+  docNumberEnc        String?
+  docNumberHash       String?            @db.Char(64)
+  docLast4            String?            @db.VarChar(4)
+  docExpiry           DateTime?          @db.Date
+  isLead              Boolean            @default(false)
+  infantOfPassengerId String?            @db.Uuid
+  infantOf            BookingPassenger?  @relation("InfantOf", fields: [tenantId, infantOfPassengerId], references: [tenantId, id], onDelete: Restrict)
+  infants             BookingPassenger[] @relation("InfantOf")
+  createdAt           DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime           @updatedAt @db.Timestamptz(3)
+
+  items BookingItemPassenger[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, bookingId])
+  @@index([tenantId, docNumberHash])
+  @@index([lastName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("booking_passenger")
+}
+
+model BookingItemPassenger {
+  tenantId           String           @db.Uuid
+  bookingItemId      String           @db.Uuid
+  bookingItem        BookingItem      @relation(fields: [tenantId, bookingItemId], references: [tenantId, id], onDelete: Cascade)
+  bookingPassengerId String           @db.Uuid
+  bookingPassenger   BookingPassenger @relation(fields: [tenantId, bookingPassengerId], references: [tenantId, id], onDelete: Cascade)
+  ticketNumber       String?
+  seat               String?
+
+  @@id([bookingItemId, bookingPassengerId])
+  @@unique([tenantId, ticketNumber])
+  @@index([tenantId, bookingPassengerId])
+  @@map("booking_item_passenger")
+}
+
+model BookingStatusHistory {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @db.Uuid
+  bookingId     String   @db.Uuid
+  booking       Booking  @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  bookingItemId String?  @db.Uuid
+  fromStatus    String?
+  toStatus      String
+  reason        String?
+  userId        String?  @db.Uuid
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, bookingId, createdAt])
+  @@map("booking_status_history")
+}
+
+model BookingItemCancellation {
+  id                     String      @id @default(uuid(7)) @db.Uuid
+  tenantId               String      @db.Uuid
+  bookingItemId          String      @db.Uuid
+  bookingItem            BookingItem @relation(fields: [tenantId, bookingItemId], references: [tenantId, id], onDelete: Restrict)
+  reason                 String
+  supplierFee            Decimal     @default(0) @db.Decimal(18, 4)
+  agencyFee              Decimal     @default(0) @db.Decimal(18, 4)
+  expectedSupplierRefund Decimal     @default(0) @db.Decimal(18, 4)
+  cancelledById          String      @db.Uuid
+  cancelledAt            DateTime    @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, bookingItemId])
+  @@map("booking_item_cancellation")
+}
+
+model BookingAmendment {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  tenantId        String          @db.Uuid
+  bookingId       String          @db.Uuid
+  booking         Booking         @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  number          Int
+  reason          String
+  operations      Json
+  changes         Json?
+  supplierFee     Decimal         @default(0) @db.Decimal(18, 4)
+  agencyFee       Decimal         @default(0) @db.Decimal(18, 4)
+  priceDifference Decimal         @default(0) @db.Decimal(18, 4)
+  status          AmendmentStatus @default(DRAFT)
+  createdById     String          @db.Uuid
+  appliedById     String?         @db.Uuid
+  appliedAt       DateTime?       @db.Timestamptz(3)
+  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([bookingId, number])
+  @@map("booking_amendment")
+}
+
+model ItineraryNote {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @db.Uuid
+  bookingId String   @db.Uuid
+  booking   Booking  @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  date      DateTime @db.Date
+  textEn    String?
+  textAr    String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, bookingId, date])
+  @@map("itinerary_note")
 }

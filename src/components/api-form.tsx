@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useId, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { formSchemas, type FormSchemaName } from "@/lib/schemas";
+import { formSchemas, type FormSchemaName } from "@/lib/form-schemas";
 import { fieldErrors, type FieldError } from "@/lib/validation";
 import { translator, type Locale } from "@/lib/i18n";
 
@@ -31,8 +31,25 @@ function collect(form: HTMLFormElement): Record<string, unknown> {
       set(el.name, Array.from(el.selectedOptions).map((o) => o.value));
     } else set(el.name, el.value);
   }
-  return out;
+  return arraysFromIndexes(out) as Record<string, unknown>;
 }
+
+/** `{ "0": a, "1": b }` → `[a, b]` (repeatable rows such as flight segments). Gaps from removed rows are dropped. */
+function arraysFromIndexes(v: unknown): unknown {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return Array.isArray(v) ? v.map(arraysFromIndexes) : v;
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length && entries.every(([k]) => /^\d+$/.test(k)))
+    return entries.sort(([a], [b]) => Number(a) - Number(b)).map(([, x]) => arraysFromIndexes(x));
+  return Object.fromEntries(entries.map(([k, x]) => [k, arraysFromIndexes(x)]));
+}
+
+/** crypto.randomUUID exists only in secure contexts (https/localhost); getRandomValues works everywhere. */
+function newKey(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+type Duplicate = { id: string; code?: string; displayName?: string; reference?: string };
 
 type Props = {
   action: string;
@@ -46,6 +63,10 @@ type Props = {
   resetOnSuccess?: boolean;
   /** Extra fields merged into the body (e.g. a token from the URL). */
   extra?: Record<string, unknown>;
+  /** Link pattern for POSSIBLE_DUPLICATE matches, e.g. "/customers/{id}"; enables "create anyway". */
+  duplicateHref?: string;
+  /** Redirect target after success; "{id}" is replaced with the created record's id. */
+  redirectToCreated?: string;
   children: ReactNode;
   className?: string;
 };
@@ -55,20 +76,25 @@ type Props = {
  * submits JSON to /api/v1 (or Better Auth), shows server field errors, and only reports success after
  * the server confirms it (FR-07).
  */
-export function ApiForm({ action, method = "POST", schema, locale, submitLabel, successMessage, redirectTo, hardRedirect, resetOnSuccess, extra, children, className }: Props) {
+export function ApiForm({ action, method = "POST", schema, locale, submitLabel, successMessage, redirectTo, hardRedirect, resetOnSuccess, extra, duplicateHref, redirectToCreated, children, className }: Props) {
   const t = useMemo(() => translator(locale), [locale]);
   const router = useRouter();
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [duplicates, setDuplicates] = useState<Duplicate[] | null>(null);
+  // IDM-01: one key per logical submission, reused on retries, renewed after success.
+  const idempotencyKey = useRef<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>, confirmDuplicate = false) {
     e.preventDefault();
-    const form = e.currentTarget;
+    const form = formRef.current!;
     setSuccess(null);
     setFormError(null);
-    const body = { ...collect(form), ...extra };
+    setDuplicates(null);
+    const body = { ...collect(form), ...extra, ...(confirmDuplicate ? { confirmDuplicate: true } : {}) };
     if (schema) {
       const parsed = formSchemas[schema].safeParse(body);
       if (!parsed.success) {
@@ -79,8 +105,17 @@ export function ApiForm({ action, method = "POST", schema, locale, submitLabel, 
     setErrors({});
     setPending(true);
     try {
-      const res = await fetch(action, { method, headers: { "content-type": "application/json", "accept-language": locale }, body: JSON.stringify(body) });
+      idempotencyKey.current ??= newKey();
+      const headers: Record<string, string> = { "content-type": "application/json", "accept-language": locale };
+      if (method === "POST") headers["idempotency-key"] = idempotencyKey.current;
+      const res = await fetch(action, { method, headers, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
+      if (res.ok) idempotencyKey.current = null;
+      if (!res.ok && data.code === "POSSIBLE_DUPLICATE" && duplicateHref) {
+        idempotencyKey.current = null;
+        setDuplicates(data.duplicates ?? []);
+        return;
+      }
       if (!res.ok) {
         if (Array.isArray(data.errors)) setErrors(toMap(data.errors));
         const code = (data.code as string | undefined) ?? (res.status === 429 ? "RATE_LIMITED" : undefined);
@@ -89,6 +124,10 @@ export function ApiForm({ action, method = "POST", schema, locale, submitLabel, 
         return;
       }
       if (resetOnSuccess) form.reset();
+      if (redirectToCreated && data?.data?.id) {
+        router.push(redirectToCreated.replace("{id}", data.data.id));
+        return;
+      }
       if (redirectTo) {
         if (hardRedirect) window.location.assign(redirectTo);
         else router.push(redirectTo);
@@ -105,7 +144,24 @@ export function ApiForm({ action, method = "POST", schema, locale, submitLabel, 
 
   return (
     <FormErrors.Provider value={errors}>
-      <form onSubmit={onSubmit} noValidate className={className ?? "space-y-4"}>
+      <form ref={formRef} onSubmit={onSubmit} noValidate className={className ?? "space-y-4"}>
+        {duplicates && (
+          <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 sm:col-span-full">
+            <p className="font-medium">{t("form.possibleDuplicates")}</p>
+            <ul className="my-2 list-disc ps-5">
+              {duplicates.map((d) => (
+                <li key={d.id}>
+                  <a className="underline" href={duplicateHref!.replace("{id}", d.id)} target="_blank" rel="noreferrer">
+                    {d.reference ?? `${d.displayName ?? ""} ${d.code ? `(${d.code})` : ""}`}
+                  </a>
+                </li>
+              ))}
+            </ul>
+            <button type="button" className="btn-secondary" onClick={(ev) => onSubmit(ev as unknown as React.FormEvent<HTMLFormElement>, true)}>
+              {t("form.createAnyway")}
+            </button>
+          </div>
+        )}
         {formError && (
           <div role="alert" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
             {formError}

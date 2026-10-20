@@ -9,6 +9,11 @@ import * as auditRoute from "@/app/api/v1/audit-logs/route";
 import * as dashboardRoute from "@/app/api/v1/dashboard/route";
 import * as taxRoute from "@/app/api/v1/tax-rates/route";
 import * as revokeSessionsRoute from "@/app/api/v1/members/[id]/revoke-sessions/route";
+import * as customersRoute from "@/app/api/v1/customers/route";
+import * as suppliersRoute from "@/app/api/v1/suppliers/route";
+import * as productsRoute from "@/app/api/v1/products/route";
+import * as bookingsRoute from "@/app/api/v1/bookings/route";
+import * as lookupRoute from "@/app/api/v1/travelers/lookup/route";
 import type { Role } from "@/generated/prisma/enums";
 
 // TST-06: each role against a representative route per permission (§4.7), plus branch scope and AUTH-19/23.
@@ -17,6 +22,7 @@ const ROLES: Role[] = ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERA
 
 let A: TestAgency;
 let branch2: string;
+let customerId: string;
 const session: Partial<Record<Role, { cookie: string; membershipId: string; userId: string }>> = {};
 
 beforeAll(async () => {
@@ -25,6 +31,7 @@ beforeAll(async () => {
   const b2 = await call(branchesRoute.POST as Handler, "POST", "/api/v1/branches", { cookie: A.ownerCookie, body: { code: "JED", nameEn: "Jeddah" } });
   branch2 = b2.json.data.id;
   for (const role of ROLES.slice(1)) session[role] = await addMember(A.ownerCookie, role, [A.branchId]);
+  customerId = (await call(customersRoute.POST as Handler, "POST", "/api/v1/customers", { cookie: A.ownerCookie, body: { type: "CORPORATE", displayName: "Matrix Co" } })).json.data.id;
 }, 120_000);
 
 const as = (role: Role) => session[role]!.cookie;
@@ -46,6 +53,14 @@ const cases: Case[] = [
   { name: "audit:read — GET /audit-logs", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "ACCOUNTANT"], run: (c) => call(auditRoute.GET as Handler, "GET", "/api/v1/audit-logs", { cookie: c }) },
   { name: "any member — GET /dashboard", allowed: ROLES, run: (c) => call(dashboardRoute.GET as Handler, "GET", "/api/v1/dashboard", { cookie: c }) },
   { name: "any member — GET /branches", allowed: ROLES, run: (c) => call(branchesRoute.GET as Handler, "GET", "/api/v1/branches", { cookie: c }) },
+  { name: "customer:read — GET /customers", allowed: ROLES, run: (c) => call(customersRoute.GET as Handler, "GET", "/api/v1/customers", { cookie: c }) },
+  { name: "customer:write — POST /customers", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT"], run: (c) => call(customersRoute.POST as Handler, "POST", "/api/v1/customers", { cookie: c, body: { type: "CORPORATE", displayName: `Co ${uniq()}` } }) },
+  { name: "supplier:read — GET /suppliers", allowed: ROLES, run: (c) => call(suppliersRoute.GET as Handler, "GET", "/api/v1/suppliers", { cookie: c }) },
+  { name: "supplier:write — POST /suppliers", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "OPERATIONS_AGENT", "ACCOUNTANT"], run: (c) => call(suppliersRoute.POST as Handler, "POST", "/api/v1/suppliers", { cookie: c, body: { type: "OTHER", code: `S${uniq().slice(0, 6)}`.toUpperCase(), nameEn: "S" } }) },
+  { name: "product:write — POST /products", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "OPERATIONS_AGENT"], run: (c) => call(productsRoute.POST as Handler, "POST", "/api/v1/products", { cookie: c, body: { type: "TOUR", code: `P${uniq().slice(0, 6)}`.toUpperCase(), nameEn: "P", defaultCost: "0", defaultSell: "0" } }) },
+  { name: "booking:read — GET /bookings", allowed: ROLES, run: (c) => call(bookingsRoute.GET as Handler, "GET", "/api/v1/bookings", { cookie: c }) },
+  { name: "booking:write — POST /bookings", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT"], run: (c) => call(bookingsRoute.POST as Handler, "POST", "/api/v1/bookings", { cookie: c, body: { customerId, confirmDuplicate: true } }) },
+  { name: "traveldoc:read — POST /travelers/lookup", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT"], run: (c) => call(lookupRoute.POST as Handler, "POST", "/api/v1/travelers/lookup", { cookie: c, body: { number: "A1234567" } }) },
 ];
 
 describe("permission matrix by role", () => {

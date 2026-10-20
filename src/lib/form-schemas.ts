@@ -1,0 +1,42 @@
+import * as base from "./schemas";
+import * as travel from "./schemas-travel";
+
+/** Schemas the browser form component can look up by name (client-side validation, FR-05). */
+export const formSchemas = {
+  signup: base.signupSchema,
+  login: base.loginSchema,
+  forgotPassword: base.forgotPasswordSchema,
+  resetPassword: base.resetPasswordSchema,
+  changePassword: base.changePasswordSchema,
+  profile: base.profileSchema,
+  agency: base.agencySchema,
+  branch: base.branchSchema,
+  taxRate: base.taxRateSchema,
+  exchangeRate: base.exchangeRateSchema,
+  numbering: base.numberingSchema,
+  invitation: base.invitationSchema,
+  acceptInvitation: base.acceptInvitationSchema,
+  memberUpdate: base.memberUpdateSchema,
+  customer: travel.customerSchema,
+  customerUpdate: travel.customerUpdateSchema,
+  contact: travel.contactSchema,
+  traveler: travel.travelerSchema,
+  travelDocument: travel.travelDocumentSchema,
+  interaction: travel.interactionSchema,
+  supplier: travel.supplierSchema,
+  supplierContact: travel.supplierContactSchema,
+  commissionRule: travel.commissionRuleSchema,
+  product: travel.productSchema,
+  bookingCreate: travel.bookingCreateSchema,
+  bookingUpdate: travel.bookingUpdateSchema,
+  bookingItem: travel.bookingItemSchema,
+  itemChanges: travel.itemChangesSchema,
+  itemStatus: travel.itemStatusSchema,
+  cancelItem: travel.cancelItemSchema,
+  cancelBooking: travel.cancelBookingSchema,
+  passenger: travel.passengerSchema,
+  itineraryNote: travel.itineraryNoteSchema,
+  amendment: travel.amendmentSchema,
+  version: travel.versionSchema,
+} as const;
+export type FormSchemaName = keyof typeof formSchemas;

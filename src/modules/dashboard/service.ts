@@ -1,4 +1,6 @@
 import { can, type Ctx } from "@/server/context";
+import { scopeWhere } from "@/server/scope";
+import { expiresWithin } from "@/lib/travel";
 import { entitlements, usage } from "@/server/plan";
 
 /** Phase 1 dashboard (§15.1): setup checklist, team and plan usage, all from persisted data. */
@@ -40,5 +42,41 @@ export async function getDashboard(ctx: Ctx) {
       storage: { usedBytes: used.storageBytes, limitBytes: limits.storageGb * 1024 ** 3 },
     },
     recentActivity: recent.map((r) => ({ ...r, actorName: (r.actorId && actorName.get(r.actorId)) || null })),
+    operations: can(ctx, "booking:read") ? await operations(ctx, t.timezone) : null,
   };
+}
+
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+
+/** §15.1 Phase 2 tiles. Each list links to the filtered booking list (DSH-01). */
+async function operations(ctx: Ctx, timeZone: string) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const todayDate = new Date(`${today}T00:00:00Z`);
+  const scope = scopeWhere(ctx, "booking:read");
+  const live = { status: { in: ["DRAFT", "ON_HOLD", "CONFIRMED", "ISSUED"] as ("DRAFT" | "ON_HOLD" | "CONFIRMED" | "ISSUED")[] } };
+  const pick = { id: true, reference: true, status: true, customer: { select: { displayName: true } } } as const;
+  const in60 = new Date(todayDate.getTime() + 60 * 86_400_000);
+  const [departures, returns, held, createdThisWeek, upcoming] = await Promise.all([
+    ctx.db.booking.findMany({ where: { ...scope, ...live, travelStartDate: todayDate }, select: pick, take: 10 }),
+    ctx.db.booking.findMany({ where: { ...scope, ...live, travelEndDate: todayDate }, select: pick, take: 10 }),
+    ctx.db.bookingItem.findMany({
+      where: { status: "HELD", optionDeadline: { lte: new Date(Date.now() + 48 * 3_600_000) }, booking: scope },
+      select: { id: true, description: true, optionDeadline: true, booking: { select: { id: true, reference: true } } },
+      orderBy: { optionDeadline: "asc" },
+      take: 10,
+    }),
+    ctx.db.booking.count({ where: { ...scope, createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } } }),
+    ctx.db.booking.findMany({
+      where: { ...scope, ...live, travelStartDate: { gte: todayDate, lte: in60 } },
+      select: { id: true, reference: true, travelEndDate: true, travelStartDate: true, items: { where: { serviceType: "FLIGHT", status: { notIn: ["CANCELLED", "FAILED"] } }, select: { id: true } }, passengers: { select: { id: true, firstName: true, lastName: true, docExpiry: true, docLast4: true } } },
+      take: 200,
+    }),
+  ]);
+  // CRM-10: passport expiring within 6 months of return, or missing on a booking with flights.
+  const documentWarnings = upcoming.flatMap((b) =>
+    b.passengers
+      .filter((p) => (p.docExpiry ? expiresWithin(isoDay(p.docExpiry), isoDay(b.travelEndDate ?? b.travelStartDate!)) : b.items.length > 0 && !p.docLast4))
+      .map((p) => ({ bookingId: b.id, reference: b.reference, passenger: `${p.firstName} ${p.lastName}`, docExpiry: p.docExpiry ? isoDay(p.docExpiry) : null })),
+  );
+  return { today, departures, returns, held, createdThisWeek, documentWarnings: documentWarnings.slice(0, 20) };
 }

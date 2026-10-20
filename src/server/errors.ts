@@ -8,6 +8,8 @@ export class AppError extends Error {
     message: string,
     readonly errors: FieldError[] = [],
     readonly headers: Record<string, string> = {},
+    /** Extra machine-readable members of the problem document (e.g. possible duplicates). */
+    readonly extra: Record<string, unknown> = {},
   ) {
     super(message);
   }

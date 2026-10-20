@@ -98,6 +98,47 @@ export default async function DashboardPage() {
             </ul>
           </section>
         )}
+        {d.operations && (
+          <section className="card lg:col-span-3" aria-labelledby="ops">
+            <h2 id="ops" className="mb-3 font-semibold">{t("dashboard.operations")}</h2>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {(
+                [
+                  ["departures", d.operations.departures, `/bookings?travelFrom=${d.operations.today}&travelTo=${d.operations.today}`],
+                  ["returns", d.operations.returns, null],
+                ] as const
+              ).map(([key, rows, href]) => (
+                <div key={key}>
+                  <h3 className="text-sm font-medium">{href ? <Link className="underline" href={href}>{t(`dashboard.${key}`)}</Link> : t(`dashboard.${key}`)} <span className="text-muted">({nf.format(rows.length)})</span></h3>
+                  {rows.length === 0 ? <p className="text-sm text-muted">{t("dashboard.none")}</p> : (
+                    <ul className="mt-1 space-y-1 text-sm">{rows.map((b) => <li key={b.id}><Link className="underline" href={`/bookings/${b.id}`} dir="ltr">{b.reference}</Link> · {b.customer.displayName}</li>)}</ul>
+                  )}
+                </div>
+              ))}
+              <div>
+                <h3 className="text-sm font-medium">{t("dashboard.heldDeadlines")} <span className="text-muted">({nf.format(d.operations.held.length)})</span></h3>
+                {d.operations.held.length === 0 ? <p className="text-sm text-muted">{t("dashboard.none")}</p> : (
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {d.operations.held.map((h) => (
+                      <li key={h.id}><Link className="underline" href={`/bookings/${h.booking.id}`} dir="ltr">{h.booking.reference}</Link> · {h.description} · <span className="text-amber-800 dark:text-amber-300">{formatDateTime(h.optionDeadline!, locale, ctx.tenant.timezone)}</span></li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h3 className="text-sm font-medium">{t("dashboard.documentWarnings")} <span className="text-muted">({nf.format(d.operations.documentWarnings.length)})</span></h3>
+                {d.operations.documentWarnings.length === 0 ? <p className="text-sm text-muted">{t("dashboard.none")}</p> : (
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {d.operations.documentWarnings.map((w, n) => (
+                      <li key={n}><Link className="underline" href={`/bookings/${w.bookingId}`} dir="ltr">{w.reference}</Link> · <bdi dir="ltr">{w.passenger}</bdi> · {w.docExpiry ? t("crm.expires", { date: formatDate(w.docExpiry, locale) }) : t("dashboard.noDocument")}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+            <p className="mt-3 text-sm text-muted">{t("dashboard.createdThisWeek", { count: nf.format(d.operations.createdThisWeek) })}</p>
+          </section>
+        )}
         <section className="card space-y-4" aria-labelledby="usage">
           <h2 id="usage" className="font-semibold">
             {t("dashboard.usage")}
