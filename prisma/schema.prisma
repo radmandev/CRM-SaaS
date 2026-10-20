@@ -1,0 +1,408 @@
+// Phase 1 schema. Conventions: SPEC.md §21.1, deviations in docs/architecture-decisions.md (ADR-03).
+// Tenant-owned models carry tenantId, @@unique([tenantId, id]) and composite FKs (TEN-01, TEN-05).
+// Their names are listed in src/server/db.ts (TENANT_MODELS); a test keeps that list in sync with this file.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  BRANCH_MANAGER
+  SALES_AGENT
+  OPERATIONS_AGENT
+  ACCOUNTANT
+  VIEWER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum TenantStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum TaxCategory {
+  STANDARD
+  ZERO_RATED
+  EXEMPT
+  OUT_OF_SCOPE
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  DEAD
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  PLATFORM_SUPPORT
+}
+
+// ───────────── Global: identity (Better Auth core tables) ─────────────
+
+model User {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  locale        String   @default("ar")
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  sessions           Session[]
+  accounts           Account[]
+  memberships        Membership[]
+  invitationsCreated Invitation[]
+
+  @@map("user")
+}
+
+model Session {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  token          String   @unique
+  userId         String   @db.Uuid
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeTenantId String?  @db.Uuid
+  expiresAt      DateTime @db.Timestamptz(3)
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  accountId             String
+  providerId            String
+  userId                String    @db.Uuid
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// Better Auth's own limiter for /api/auth/* endpoints.
+model RateLimit {
+  id          String @id @default(uuid(7)) @db.Uuid
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+
+  @@map("rate_limit")
+}
+
+// Our fixed-window counters (SEC-14, AUTH-06).
+model RateLimitBucket {
+  key         String
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@map("rate_limit_bucket")
+}
+
+// ───────────── Global: plans, jobs ─────────────
+
+model Plan {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  code         String   @unique
+  nameEn       String
+  nameAr       String
+  entitlements Json
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  tenants      Tenant[]
+
+  @@map("plan")
+}
+
+model Job {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  tenantId    String?   @db.Uuid
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id])
+  type        String
+  payload     Json
+  status      JobStatus @default(QUEUED)
+  runAt       DateTime  @default(now()) @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(8)
+  lastError   String?
+  lockedAt    DateTime? @db.Timestamptz(3)
+  lockedBy    String?
+  dedupeKey   String?   @unique
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([status, runAt])
+  @@map("job")
+}
+
+// ───────────── Tenant ─────────────
+
+model Tenant {
+  id                      String       @id @default(uuid(7)) @db.Uuid
+  slug                    String       @unique
+  status                  TenantStatus @default(TRIALING)
+  planId                  String       @db.Uuid
+  plan                    Plan         @relation(fields: [planId], references: [id])
+  trialEndsAt             DateTime?    @db.Timestamptz(3)
+  legalNameEn             String
+  legalNameAr             String?
+  tradeNameEn             String?
+  tradeNameAr             String?
+  country                 String       @default("SA") @db.Char(2)
+  crNumber                String?
+  vatRegistered           Boolean      @default(false)
+  vatNumber               String?
+  vatRegisteredAt         DateTime?    @db.Date
+  tourismLicenseNumber    String?
+  addressBuilding         String?
+  addressStreet           String?
+  addressDistrict         String?
+  addressCity             String?
+  addressPostalCode       String?
+  addressAdditionalNumber String?
+  phone                   String?
+  email                   String?
+  website                 String?
+  baseCurrency            String       @default("SAR") @db.Char(3)
+  enabledCurrencies       String[]     @default(["SAR"])
+  timezone                String       @default("Asia/Riyadh")
+  defaultLocale           String       @default("ar")
+  weekStartsOn            Int          @default(0)
+  showHijri               Boolean      @default(false)
+  pricesIncludeTax        Boolean      @default(false)
+  primaryColor            String       @default("#0f766e")
+  documentFooterEn        String?
+  documentFooterAr        String?
+  // { BOOKING: "BK", INVOICE: "INV", ... } — validated by Zod (NUM-03)
+  numberingPrefixes       Json         @default("{}")
+  createdAt               DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime     @updatedAt @db.Timestamptz(3)
+
+  memberships     Membership[]
+  branches        Branch[]
+  invitations     Invitation[]
+  taxRates        TaxRate[]
+  exchangeRates   ExchangeRate[]
+  numberSequences NumberSequence[]
+  documents       Document[]
+  auditLogs       AuditLog[]
+  jobs            Job[]
+
+  @@map("tenant")
+}
+
+model Branch {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  code       String
+  nameEn     String
+  nameAr     String?
+  address    String?
+  phone      String?
+  email      String?
+  timezone   String?
+  archivedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+
+  primaryForMembers Membership[]
+  memberBranches    MembershipBranch[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, code])
+  @@map("branch")
+}
+
+model Membership {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  tenantId        String           @db.Uuid
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId          String           @db.Uuid
+  user            User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role            Role
+  status          MembershipStatus @default(ACTIVE)
+  primaryBranchId String           @db.Uuid
+  primaryBranch   Branch           @relation(fields: [tenantId, primaryBranchId], references: [tenantId, id], onDelete: Restrict)
+  jobTitle        String?
+  phone           String?
+  employeeCode    String?
+  deactivatedAt   DateTime?        @db.Timestamptz(3)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  branches MembershipBranch[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, userId])
+  @@unique([tenantId, employeeCode])
+  @@index([userId])
+  @@map("membership")
+}
+
+model MembershipBranch {
+  tenantId     String     @db.Uuid
+  membershipId String     @db.Uuid
+  membership   Membership @relation(fields: [tenantId, membershipId], references: [tenantId, id], onDelete: Cascade)
+  branchId     String     @db.Uuid
+  branch       Branch     @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+
+  @@id([membershipId, branchId])
+  @@index([tenantId, branchId])
+  @@map("membership_branch")
+}
+
+model Invitation {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  tenantId    String    @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  email       String
+  role        Role
+  // Validated against the tenant's active branches on create and again on accept.
+  branchIds   String[]  @db.Uuid
+  tokenHash   String    @unique
+  invitedById String    @db.Uuid
+  invitedBy   User      @relation(fields: [invitedById], references: [id], onDelete: Restrict)
+  expiresAt   DateTime  @db.Timestamptz(3)
+  acceptedAt  DateTime? @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, email])
+  @@map("invitation")
+}
+
+model TaxRate {
+  id                  String      @id @default(uuid(7)) @db.Uuid
+  tenantId            String      @db.Uuid
+  tenant              Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  code                String
+  nameEn              String
+  nameAr              String
+  rate                Decimal     @db.Decimal(7, 4)
+  category            TaxCategory
+  zatcaCode           String      @db.Char(1)
+  exemptionReasonCode String?
+  exemptionReasonText String?
+  active              Boolean     @default(true)
+  createdAt           DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime    @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, code])
+  @@map("tax_rate")
+}
+
+model ExchangeRate {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @db.Uuid
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  fromCurrency  String   @db.Char(3)
+  toCurrency    String   @db.Char(3)
+  rate          Decimal  @db.Decimal(20, 10)
+  effectiveDate DateTime @db.Date
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, fromCurrency, toCurrency, effectiveDate])
+  @@map("exchange_rate")
+}
+
+model NumberSequence {
+  tenantId  String @db.Uuid
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  series    String
+  year      Int
+  nextValue Int    @default(1)
+
+  @@id([tenantId, series, year])
+  @@map("number_sequence")
+}
+
+// Phase 1 uses this only for the tenant logo; scanning/retention fields arrive in Phase 4 (§14).
+model Document {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @db.Uuid
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  storageKey   String   @unique
+  filename     String
+  mimeType     String
+  size         Int
+  sha256       String   @db.Char(64)
+  category     String
+  entityType   String
+  entityId     String?  @db.Uuid
+  uploadedById String   @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, entityType, entityId])
+  @@map("document")
+}
+
+// Append-only (trigger in migration), AUD-01..03.
+model AuditLog {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String?   @db.Uuid
+  tenant           Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  actorType        ActorType
+  actorId          String?   @db.Uuid
+  action           String
+  entityType       String
+  entityId         String?   @db.Uuid
+  parentEntityType String?
+  parentEntityId   String?   @db.Uuid
+  changes          Json?
+  metadata         Json?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([tenantId, entityType, entityId, createdAt(sort: Desc)])
+  @@index([tenantId, actorId, createdAt(sort: Desc)])
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@map("audit_log")
+}

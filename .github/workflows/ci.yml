@@ -1,0 +1,35 @@
+# §25.4 quality gates. Not yet executed: the repository has no remote. See BUILD_STATUS.md.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Start Postgres, S3, Mailpit
+        run: docker compose up -d --wait postgres s3 mailpit
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Prisma schema valid and migrations match schema
+        run: |
+          npx prisma validate
+          npx prisma migrate deploy
+          test "$(npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script | grep -v '^--' | grep -c .)" = "0"
+        env: { DATABASE_URL: postgresql://app:app@localhost:5432/travel }
+      - name: Unit + integration tests (real PostgreSQL)
+        run: npm test
+        env: { TEST_DATABASE_URL: postgresql://app:app@localhost:5432/travel_test, S3_ENDPOINT: http://localhost:8333, S3_REGION: us-east-1, S3_ACCESS_KEY_ID: dev, S3_SECRET_ACCESS_KEY: dev, S3_FORCE_PATH_STYLE: "true" }
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Production build without runtime secrets
+        run: npm run build
+      - name: Docker image
+        run: docker build --target runtime -t travel-saas:ci .
