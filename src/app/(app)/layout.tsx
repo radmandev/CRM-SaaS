@@ -62,7 +62,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   })).filter((g) => g.items.length);
   const nav = <NavLinks groups={groups} />;
   return (
-    <div style={{ "--brand": tenant.primaryColor } as React.CSSProperties} className="min-h-dvh">
+    <div style={{ "--brand": tenant.primaryColor } as React.CSSProperties} className="relative isolate min-h-dvh">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[32rem] bg-[radial-gradient(48rem_22rem_at_100%_0%,color-mix(in_srgb,var(--brand)_14%,transparent),transparent),radial-gradient(40rem_20rem_at_0%_0%,rgb(245_158_11/0.08),transparent),radial-gradient(36rem_18rem_at_50%_0%,rgb(99_102_241/0.06),transparent)]" />
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:start-2 focus:top-2 focus:z-50 focus:rounded focus:bg-surface focus:p-2">
         {t("nav.skip")}
       </a>
@@ -75,7 +76,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </nav>
           </details>
           <span className="flex min-w-0 items-center gap-2 font-bold">
-            <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand text-white shadow-sm shadow-brand/30"><Icon name="plane" className="size-4" /></span>
+            <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand to-[color-mix(in_srgb,var(--brand)_60%,#22d3ee)] text-white shadow-md shadow-brand/30"><Icon name="plane" className="size-4" /></span>
             <span className="truncate">{name(tenant)}</span>
           </span>
           <span className="badge shrink-0">{t(`role.${ctx.membership.role}`)}</span>
@@ -85,7 +86,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               <span className="relative block"><span className="pointer-events-none absolute inset-y-0 start-2.5 grid place-items-center text-muted"><Icon name="search" className="size-4" /></span><input name="q" placeholder={t("search.placeholder")} className="input w-72 rounded-full bg-bg py-1.5 ps-8" maxLength={100} /></span>
             </label>
           </form>
-          <div className="ms-auto flex items-center gap-1">
+          <div className="ms-auto flex items-center gap-1 whitespace-nowrap">
             <TenantSwitcher locale={locale} current={ctx.tenant.id} label={t("nav.switchAgency")} options={memberships.map((m) => ({ id: m.tenantId, name: name(m.tenant) }))} />
             <LocaleSwitcher locale={locale} loggedIn />
             <span className="hidden text-sm text-muted lg:inline">{ctx.user.name}</span>

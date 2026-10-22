@@ -4,6 +4,17 @@ import { pageCtx, pageT } from "@/server/page";
 import { can } from "@/server/context";
 import { Money, PageHeader, EmptyState } from "@/components/ui";
 import { formatBytes, formatDate, formatDateTime } from "@/lib/format";
+import { Icon, type IconName } from "@/components/icons";
+
+// Decorative tile accents (text stays dark for contrast; color is never the only signal).
+const TILE: Record<string, { icon: IconName; chip: string; glow: string }> = {
+  salesThisMonth: { icon: "reports", chip: "bg-indigo-500/12 text-indigo-600 dark:text-indigo-300", glow: "from-indigo-500/10" },
+  salesLastMonth: { icon: "reports", chip: "bg-violet-500/12 text-violet-600 dark:text-violet-300", glow: "from-violet-500/10" },
+  receivables: { icon: "invoices", chip: "bg-sky-500/12 text-sky-600 dark:text-sky-300", glow: "from-sky-500/10" },
+  overdue: { icon: "refunds", chip: "bg-rose-500/12 text-rose-600 dark:text-rose-300", glow: "from-rose-500/10" },
+  receiptsThisWeek: { icon: "payments", chip: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-300", glow: "from-emerald-500/10" },
+  pipeline: { icon: "quotations", chip: "bg-amber-500/15 text-amber-700 dark:text-amber-300", glow: "from-amber-500/10" },
+};
 
 export const metadata = { title: "Dashboard" };
 
@@ -70,6 +81,9 @@ export default async function DashboardPage() {
                 })}
               </span>
             </div>
+            <div className="mb-4 h-2.5 overflow-hidden rounded-full bg-bg" role="progressbar" aria-label={t("dashboard.setup")} aria-valuemin={0} aria-valuemax={d.checklist.length} aria-valuenow={done}>
+              <div className="h-full rounded-full bg-gradient-to-r from-brand to-[color-mix(in_srgb,var(--brand)_55%,#22d3ee)] transition-all rtl:bg-gradient-to-l" style={{ width: `${Math.round((done / d.checklist.length) * 100)}%` }} />
+            </div>
             <ul className="divide-y divide-line">
               {d.checklist.map((c) => (
                 <li
@@ -79,9 +93,9 @@ export default async function DashboardPage() {
                   <span className="flex items-center gap-2">
                     <span
                       aria-hidden="true"
-                      className={c.done ? "text-emerald-600" : "text-muted"}
+                      className={`grid size-6 place-items-center rounded-full ${c.done ? "bg-emerald-500 text-white" : "border-2 border-line"}`}
                     >
-                      {c.done ? "✓" : "○"}
+                      {c.done && <Icon name="check" className="size-3.5" />}
                     </span>
                     <span>{t(`dashboard.check.${c.key}`)}</span>
                     <span className="sr-only">
@@ -101,7 +115,7 @@ export default async function DashboardPage() {
         {d.finance && (
           <section className="card lg:col-span-3" aria-labelledby="fin">
             <h2 id="fin" className="mb-3 font-semibold">{t("dashboard.finance")}</h2>
-            <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+            <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {(
                 [
                   ["salesThisMonth", d.finance.salesThisMonth, "/reports/sales"],
@@ -112,9 +126,12 @@ export default async function DashboardPage() {
                   ["pipeline", d.finance.pipeline.value, "/quotations?status=SENT"],
                 ] as const
               ).map(([k, v, href]) => (
-                <div key={k}>
-                  <dt className="text-xs text-muted">{href ? <Link className="underline" href={href}>{t(`dashboard.fin.${k}`)}</Link> : t(`dashboard.fin.${k}`)}</dt>
-                  <dd className="mt-1 text-lg font-semibold"><Money value={v} currency={d.tenant.baseCurrency} locale={locale} /></dd>
+                <div key={k} className={`relative overflow-hidden rounded-2xl border border-line bg-gradient-to-br ${TILE[k].glow} to-transparent p-4`}>
+                  <dt className="flex items-center gap-3 text-sm text-muted">
+                    <span aria-hidden="true" className={`grid size-9 place-items-center rounded-xl ${TILE[k].chip}`}><Icon name={TILE[k].icon} className="size-[18px]" /></span>
+                    {href ? <Link className="underline decoration-line underline-offset-4 hover:decoration-current" href={href}>{t(`dashboard.fin.${k}`)}</Link> : t(`dashboard.fin.${k}`)}
+                  </dt>
+                  <dd className="mt-3 text-2xl font-bold tracking-tight"><Money value={v} currency={d.tenant.baseCurrency} locale={locale} /></dd>
                 </div>
               ))}
             </dl>
@@ -198,7 +215,7 @@ export default async function DashboardPage() {
           <h2 id="team" className="mb-3 font-semibold">
             {t("dashboard.team")}
           </h2>
-          <dl className="grid grid-cols-3 gap-2 text-center">
+          <dl className="grid grid-cols-3 gap-2 text-center [&>div]:rounded-xl [&>div]:p-3 [&>div:nth-child(1)]:bg-sky-500/10 [&>div:nth-child(2)]:bg-amber-500/10 [&>div:nth-child(3)]:bg-emerald-500/10">
             {[
               ["dashboard.activeMembers", d.team.members],
               ["dashboard.pendingInvites", d.team.pendingInvites],
@@ -206,7 +223,7 @@ export default async function DashboardPage() {
             ].map(([k, v]) => (
               <div key={k as string}>
                 <dt className="text-xs text-muted">{t(k as string)}</dt>
-                <dd className="text-2xl font-bold">{nf.format(v as number)}</dd>
+                <dd className="mt-1 text-3xl font-bold tracking-tight text-fg">{nf.format(v as number)}</dd>
               </div>
             ))}
           </dl>

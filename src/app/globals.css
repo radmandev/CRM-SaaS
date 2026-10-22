@@ -45,7 +45,7 @@ summary {
     @apply block w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg shadow-xs outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/15 disabled:opacity-60 aria-[invalid=true]:border-red-500;
   }
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand/20 transition hover:brightness-110 active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-brand bg-gradient-to-b from-white/15 to-white/0 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand/20 transition hover:brightness-110 active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60;
   }
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-sm font-medium shadow-xs transition hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60;
