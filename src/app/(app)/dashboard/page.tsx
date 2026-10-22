@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getDashboard } from "@/modules/dashboard/service";
 import { pageCtx, pageT } from "@/server/page";
 import { can } from "@/server/context";
-import { PageHeader, EmptyState } from "@/components/ui";
+import { Money, PageHeader, EmptyState } from "@/components/ui";
 import { formatBytes, formatDate, formatDateTime } from "@/lib/format";
 
 export const metadata = { title: "Dashboard" };
@@ -96,6 +96,38 @@ export default async function DashboardPage() {
                 </li>
               ))}
             </ul>
+          </section>
+        )}
+        {d.finance && (
+          <section className="card lg:col-span-3" aria-labelledby="fin">
+            <h2 id="fin" className="mb-3 font-semibold">{t("dashboard.finance")}</h2>
+            <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+              {(
+                [
+                  ["salesThisMonth", d.finance.salesThisMonth, "/reports/sales"],
+                  ["salesLastMonth", d.finance.salesLastMonth, null],
+                  ["receivables", d.finance.receivables, "/reports/ar-aging"],
+                  ["overdue", d.finance.overdue, "/invoices?unpaid=true"],
+                  ["receiptsThisWeek", d.finance.receiptsThisWeek, "/payments"],
+                  ["pipeline", d.finance.pipeline.value, "/quotations?status=SENT"],
+                ] as const
+              ).map(([k, v, href]) => (
+                <div key={k}>
+                  <dt className="text-xs text-muted">{href ? <Link className="underline" href={href}>{t(`dashboard.fin.${k}`)}</Link> : t(`dashboard.fin.${k}`)}</dt>
+                  <dd className="mt-1 text-lg font-semibold"><Money value={v} currency={d.tenant.baseCurrency} locale={locale} /></dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-3 text-sm text-muted">
+              {t("dashboard.fin.openQuotes", { count: nf.format(d.finance.pipeline.open) })}
+              {d.finance.pipeline.conversionRate !== null && ` · ${t("dashboard.fin.conversion", { rate: nf.format(d.finance.pipeline.conversionRate) })}`}
+            </p>
+            {d.finance.topCustomers.length > 0 && (
+              <>
+                <h3 className="mt-4 text-sm font-medium">{t("dashboard.fin.topCustomers")}</h3>
+                <ol className="mt-1 space-y-1 text-sm">{d.finance.topCustomers.map((c) => <li key={c.id}><Link className="underline" href={`/customers/${c.id}`}>{c.name}</Link> · <Money value={c.total} currency={d.tenant.baseCurrency} locale={locale} /></li>)}</ol>
+              </>
+            )}
           </section>
         )}
         {d.operations && (

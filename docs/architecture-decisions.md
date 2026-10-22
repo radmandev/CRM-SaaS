@@ -104,6 +104,33 @@ Confirmed and issued bookings refuse direct edits (`AMENDMENT_REQUIRED`). An ame
 ### ADR-23 Test parallelism — Accepted
 Vitest runs with `maxWorkers: 2`. Each worker hashes many Argon2id passwords, and more parallelism starved the 4-core development machine. Recurring-job tests use a job-type filter on `tick()`, so they never consume other test files' email jobs.
 
+## Phase 3 decisions
+
+### ADR-24 Tenant scoping fails closed — Accepted (security fix)
+`tenantDb()` used to scope only the models listed in `TENANT_MODELS`. Phase 3 models missing from that list were unscoped: during verification, tenant B approved tenant A's expense and the audit row leaked. The extension now scopes **every** model except an explicit `GLOBAL_MODELS` list (users, sessions, plans, airports, airlines, jobs, rate limits). The isolation suite derives the model list from the schema and fails when a model is neither scoped nor declared global.
+
+### ADR-25 "finance:approve" is `refund:approve` — Accepted (Review)
+The spec uses "finance:approve" (PAY-04, REF-01, FIN-08) but §4.7 defines no such permission. Approving refunds, reversing payments and supplier payments, approving expenses above the limit and transfers between accounts all use `refund:approve`. Self-approval of refunds is refused unless the agency enables it (finance settings).
+
+### ADR-26 Financial immutability in the database — Accepted
+Issued invoices and credit notes, their lines, payments, allocations, supplier bills, refunds, expenses and transfers are protected by triggers (`protect_financial_row`), which allow only the listed status and reversal columns to change. Records are reversed with a reason, never deleted (FIN-02). Corrections to issued invoices are credit notes, capped per line.
+
+### ADR-27 PDFs: React templates + headless Chromium in the worker — Accepted
+Templates render HTML with `react-dom/server`; `playwright-core` prints it with Chromium (`CHROME_PATH`; the runtime image installs `chromium`). The font (IBM Plex Sans Arabic, OFL) is embedded as base64 so Arabic renders the same everywhere. Next refuses `react-dom/server` in app bundles even behind a dynamic import, so rendering lives in `src/modules/documents/render.ts`, which only the worker imports; it registers the `pdf.render` and `document.email` handlers at start-up (`registerWorkerHandlers`). The web app only enqueues. An issued invoice's PDF is generated once and linked permanently.
+
+### ADR-28 ZATCA Phase 1 only — Accepted
+Invoices carry number, ICV (gapless across invoices and credit notes), UUID, seller and buyer snapshots and the Phase 1 TLV QR (verified against ZATCA's published example). Hash chaining, XML, signing and clearance/reporting are Phase 6 (D-04); `zatcaStatus` stays `NOT_SUBMITTED` and the UI says so.
+
+### ADR-29 Money and balances — Accepted
+All amounts are `Decimal`; reports convert with each document's snapshot rate. Customer balance = invoiced + refunds (approved or paid) − credit notes − payments, per currency; approved-but-unpaid refunds count so the same credit cannot be refunded twice. Account balances are computed from transactions, never stored. Concurrent payments lock the invoices (`FOR UPDATE`, ordered by id) so they can never exceed the outstanding amount.
+
+### ADR-30 Phase 3 deviations — Accepted (Review)
+- Generated documents are streamed through `/api/v1/documents/{id}/download` after a permission check on the owning record, instead of presigned URLs.
+- Customers cannot accept a quotation from the public proposal link; staff record the acceptance (D-10 default).
+- No follow-up tasks (quotation follow-up, overdue reminders) until tasks exist in Phase 4.
+- No CSV exports of reports until Phase 4.
+- Online gateway payments cannot be entered by hand (PAY-05); they will come only from verified gateway callbacks.
+
 ## Deferred to later phases (defaults from Appendix A stand)
 | Decision | Phase | Note |
 |---|---|---|

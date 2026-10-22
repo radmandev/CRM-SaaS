@@ -37,7 +37,7 @@ export default async function SupplierPage({ params }: { params: Promise<{ id: s
           ))
         }
       />
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6 lg:grid-cols-3 [&>*]:min-w-0">
         <section className="card lg:col-span-2" aria-labelledby="details">
           <h2 id="details" className="mb-4 font-semibold">{t("suppliers.details")}</h2>
           {s.iban && (

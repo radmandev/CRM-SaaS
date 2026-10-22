@@ -41,6 +41,11 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": ["warn", { varsIgnorePattern: "^_", argsIgnorePattern: "^_" }],
     },
   },
+  {
+    // PDF templates are rendered to static HTML for Chromium, not served by Next.js.
+    files: ["src/modules/documents/templates.tsx"],
+    rules: { "@next/next/no-head-element": "off", "@next/next/no-img-element": "off" },
+  },
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "src/generated/**", "playwright-report/**", "test-results/**"]),
 ]);
 

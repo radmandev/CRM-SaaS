@@ -1,11 +1,12 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { addMember, call, createAgency, prisma, sentTo, uniq, type Handler, type TestAgency } from "../helpers";
+import { addMember, call, createAgency, prisma, randomUUID, sentTo, uniq, type Handler, type TestAgency } from "../helpers";
 import * as invitationsRoute from "@/app/api/v1/invitations/route";
 import * as membersRoute from "@/app/api/v1/members/route";
 import * as memberRoute from "@/app/api/v1/members/[id]/route";
-import { TENANT_MODELS, tenantDb, TenantScopeViolation } from "@/server/db";
+import { readFileSync } from "node:fs";
+import { GLOBAL_MODELS, tenantDb, TenantScopeViolation } from "@/server/db";
 
 // TST-05 / TEN-12: every /api/v1 route is attacked by tenant B with tenant A's ids. New routes are picked up
 // automatically from the file system; an [id] route without a valid body fixture below fails the suite.
@@ -41,15 +42,48 @@ async function seedPhase2(A: TestAgency) {
   await r((await m("bookings/[id]/confirm")).POST, "POST", "", { id: b2.id }, { version: v });
   const amendment = await r((await m("bookings/[id]/amendments")).POST, "POST", "", { id: b2.id }, { reason: "secret", operations: [{ op: "updateItem", itemId: i2.id, changes: { sellAmount: "9" } }] });
   const bookingRef = (await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })).reference;
+  const f = await seedPhase3(A, customer.id, supplier.id, booking.id, r, m);
   return {
     ids: {
       customers: customer.id, "customers:contactId": contact.id, travelers: traveler.id, "travel-documents": doc.id,
       suppliers: supplier.id, "suppliers:contactId": sContact.id, "suppliers:ruleId": rule.id, products: product.id,
       bookings: booking.id, "bookings:itemId": item.id, "bookings:passengerId": pax.id, "bookings:noteId": note.id, "bookings:amendmentId": amendment.id,
+      ...f.ids,
     },
-    secrets: ["Secret Customer".slice(0, 6) + "", bookingRef, "S7654321", "Secret Supplier", "Secret Tour", "Secret note", "SECRET"].filter((x) => x.length > 6),
+    secrets: [...f.secrets, "Secret Customer".slice(0, 6) + "", bookingRef, "S7654321", "Secret Supplier", "Secret Tour", "Secret note", "SECRET"].filter((x) => x.length > 6),
   };
 }
+type R = (h: Handler, method: string, path: string, params: Record<string, string>, body: unknown) => Promise<any>;
+type M = (p: string) => Promise<Record<string, Handler>>;
+
+/** Quotation (+item), draft and issued invoices (+line), payment, refund, supplier bill and payment, expense, document. */
+async function seedPhase3(A: TestAgency, customerId: string, supplierId: string, bookingId: string, r: R, m: M) {
+  await prisma.tenant.update({ where: { id: A.tenantId }, data: { vatRegistered: true, vatNumber: "300000000000003", crNumber: "1010123456", addressBuilding: "1234", addressStreet: "S", addressCity: "Riyadh", addressPostalCode: "12345" } });
+  const tour = { serviceType: "TOUR", sellAmount: "100", details: { name: "Secret Quote Tour", date: "2026-12-01" } };
+  const q = await r((await m("quotations")).POST, "POST", "", {}, { customerId });
+  const qi = await r((await m("quotations/[id]/items")).POST, "POST", "", { id: q.id }, tour);
+  const bank = (await prisma.financialAccount.findFirstOrThrow({ where: { tenantId: A.tenantId, type: "BANK" } })).id;
+  const issued = await r((await m("invoices")).POST, "POST", "", {}, { customerId, lines: [{ descriptionEn: "Secret invoice line", unitPrice: "1000", discount: "0" }] });
+  await r((await m("invoices/[id]/issue")).POST, "POST", "", { id: issued.id }, undefined);
+  const draft = await r((await m("invoices")).POST, "POST", "", {}, { bookingId });
+  const line = await prisma.invoiceLine.findFirstOrThrow({ where: { invoiceId: draft.id } });
+  const pay = await r((await m("payments")).POST, "POST", "", {}, { customerId, date: "2026-10-20", amount: "1500", method: "BANK_TRANSFER", financialAccountId: bank, reference: "SECRET-REF", allocations: [{ invoiceId: issued.id, amount: "1000" }] });
+  const refund = await r((await m("refunds")).POST, "POST", "", {}, { customerId, amount: "100", method: "BANK_TRANSFER", reason: "Secret refund" });
+  const bill = await r((await m("supplier-bills")).POST, "POST", "", {}, { supplierId, supplierInvoiceNumber: "SECRET-BILL-1", billDate: "2026-10-20", lines: [{ description: "Secret bill", amount: "50", taxAmount: "0" }] });
+  const sp = await r((await m("supplier-payments")).POST, "POST", "", {}, { supplierId, date: "2026-10-20", amount: "50", currency: "SAR", method: "BANK_TRANSFER", financialAccountId: bank });
+  const cat = (await prisma.expenseCategory.findFirstOrThrow({ where: { tenantId: A.tenantId } })).id;
+  const exp = await r((await m("expenses")).POST, "POST", "", {}, { date: "2026-10-20", categoryId: cat, description: "Secret expense", amount: "9000", taxAmount: "0", financialAccountId: bank });
+  const doc = await prisma.document.create({ data: { tenantId: A.tenantId, storageKey: `tenants/${A.tenantId}/generated/invoice/${randomUUID()}.pdf`, filename: "secret.pdf", mimeType: "application/pdf", size: 10, sha256: "0".repeat(64), category: "INVOICE", entityType: "Invoice", entityId: issued.id, uploadedById: A.ownerUserId, generated: true } });
+  const invNo = (await prisma.invoice.findUniqueOrThrow({ where: { id: issued.id } })).number!;
+  return {
+    ids: {
+      quotations: q.id, "quotations:itemId": qi.id, invoices: draft.id, "invoices:lineId": line.id, payments: pay.id, refunds: refund.id,
+      "supplier-bills": bill.id, "supplier-payments": sp.id, expenses: exp.id, documents: doc.id,
+    },
+    secrets: ["Secret Quote Tour", "Secret invoice line", "SECRET-REF", "SECRET-BILL-1", "Secret expense", invNo],
+  };
+}
+
 const hotelItemFor = (supplierId: string) => ({ serviceType: "HOTEL", supplierId, sellAmount: "100", details: { hotelName: "Secret Hotel", city: "Riyadh", checkIn: "2026-12-01", checkOut: "2026-12-03", rooms: [{ roomType: "Std" }] } });
 
 function routeFiles(dir: string): string[] {
@@ -115,9 +149,57 @@ const BODIES: Record<string, unknown> = {
   "POST bookings/[id]/itinerary-link": null,
   "POST bookings/[id]/notes": { date: "2026-12-01", textEn: "hijack" },
   "DELETE bookings/[id]/notes/[noteId]": null,
+  "PATCH quotations/[id]": { version: 1, validUntil: "2027-01-01" },
+  "POST quotations/[id]/items": { serviceType: "TOUR", sellAmount: "1", details: { name: "x", date: "2026-12-01" } },
+  "PATCH quotations/[id]/items/[itemId]": { sellAmount: "1" },
+  "DELETE quotations/[id]/items/[itemId]": null,
+  "POST quotations/[id]/approve": null,
+  "POST quotations/[id]/send": { manual: true },
+  "POST quotations/[id]/revise": null,
+  "POST quotations/[id]/accept": { version: 1 },
+  "POST quotations/[id]/reject": { version: 1, lostReason: "PRICE" },
+  "POST quotations/[id]/convert": null,
+  "POST quotations/[id]/link": null,
+  "POST quotations/[id]/pdf": null,
+  "PATCH invoices/[id]": { version: 1, type: "SIMPLIFIED" },
+  "DELETE invoices/[id]": null,
+  "POST invoices/[id]/lines": { descriptionEn: "x", unitPrice: "1", discount: "0" },
+  "DELETE invoices/[id]/lines/[lineId]": null,
+  "POST invoices/[id]/issue": null,
+  "POST invoices/[id]/credit-notes": { reason: "x", lines: [{ originalLineId: "00000000-0000-7000-8000-000000000001", amount: "1" }] },
+  "POST invoices/[id]/send": null,
+  "POST invoices/[id]/pdf": null,
+  "POST payments/[id]/allocate": { invoiceId: "00000000-0000-7000-8000-000000000001", amount: "1" },
+  "POST payments/[id]/reverse": { reason: "hijack" },
+  "POST payments/[id]/pdf": null,
+  "POST refunds/[id]/approve": {},
+  "POST refunds/[id]/reject": {},
+  "POST refunds/[id]/cancel": null,
+  "POST refunds/[id]/paid": { paidAt: "2026-10-20", financialAccountId: "00000000-0000-7000-8000-000000000001" },
+  "POST supplier-bills/[id]/reverse": { reason: "hijack" },
+  "POST supplier-payments/[id]/reverse": { reason: "hijack" },
+  "POST expenses/[id]/approve": null,
+  "POST expenses/[id]/reject": null,
+  "POST expenses/[id]/reverse": { reason: "hijack" },
+  "POST bookings/[id]/approve": null,
+  "POST bookings/[id]/documents": { kind: "CONFIRMATION" },
 };
 
+// Query strings for parameterized GET routes that require them (otherwise 400 comes before the lookup).
+const PARAM_QUERIES: Record<string, string> = {
+  "customers/[id]/statement": "?from=2026-01-01&to=2026-12-31",
+  "suppliers/[id]/statement": "?from=2026-01-01&to=2026-12-31",
+};
+// Path parameters that are not tenant records (e.g. a report name): those routes are tested like list routes.
+const NON_RECORD_PARAMS: Record<string, Record<string, string>> = { "reports/[name]": { name: "sales" } };
+
+
 type Snapshot = Record<string, string>;
+
+const SCHEMA = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
+const MODELS = [...SCHEMA.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)].map(([, name, body]) => ({ name, tenantScoped: /^\s+tenantId\s/m.test(body) }));
+/** Tenant-owned models, read from the schema itself so a new model can never be missed by the snapshot. */
+const TENANT_MODELS = MODELS.filter((m) => m.tenantScoped && !GLOBAL_MODELS.has(m.name)).map((m) => m.name);
 
 /** Every row tenant A owns in every tenant-owned table, serialized; compared before/after the attack. */
 async function snapshot(tenantId: string): Promise<Snapshot> {
@@ -157,7 +239,7 @@ describe("tenant isolation across every API route", () => {
   }, 120_000);
 
   it("finds the routes it is supposed to attack", () => {
-    expect(routeFiles(API_DIR).length).toBeGreaterThanOrEqual(60);
+    expect(routeFiles(API_DIR).length).toBeGreaterThanOrEqual(110);
   });
 
   it("returns 404 for another tenant's ids on every parameterized route and changes nothing", async () => {
@@ -166,7 +248,7 @@ describe("tenant isolation across every API route", () => {
     for (const file of routeFiles(API_DIR)) {
       const rel = relative(API_DIR, file).replace(/\/route\.ts$/, "");
       const names = [...rel.matchAll(/\[(\w+)\]/g)].map((m) => m[1]);
-      if (!names.length) continue;
+      if (!names.length || NON_RECORD_PARAMS[rel]) continue;
       const resource = rel.split("/")[0];
       const params: Record<string, string> = {};
       for (const name of names) {
@@ -180,14 +262,14 @@ describe("tenant isolation across every API route", () => {
         const key = `${method} ${rel}`;
         if (method !== "GET") expect(key in BODIES, `add a body fixture for ${key}`).toBe(true);
         const body = method === "GET" ? undefined : (BODIES[key] ?? undefined);
-        const path = `/api/v1/${rel.replace(/\[(\w+)\]/g, (_, n) => params[n])}`;
+        const path = `/api/v1/${rel.replace(/\[(\w+)\]/g, (_, n) => params[n])}${method === "GET" ? (PARAM_QUERIES[rel] ?? "") : ""}`;
         const res = await call(mod[method], method, path, { cookie: B.ownerCookie, params, body });
         expect(res.status, `${key} → ${res.status} ${res.text}`).toBe(404);
         for (const s of aSecrets) expect(res.text, `${key} leaked ${s}`).not.toContain(s);
         checked.push(key);
       }
     }
-    expect(checked.length).toBeGreaterThanOrEqual(60);
+    expect(checked.length).toBeGreaterThanOrEqual(100);
     expect(await snapshot(A.tenantId)).toEqual(before);
   });
 
@@ -195,12 +277,17 @@ describe("tenant isolation across every API route", () => {
     const before = await snapshot(A.tenantId);
     for (const file of routeFiles(API_DIR)) {
       const rel = relative(API_DIR, file).replace(/\/route\.ts$/, "");
-      if (rel.includes("[id]")) continue;
+      const fixed = NON_RECORD_PARAMS[rel];
+      if (/\[\w+\]/.test(rel) && !fixed) continue;
       const mod = (await import(file)) as Record<string, Handler>;
       if (!mod.GET) continue;
       // Searches use words that only exist in tenant A's data.
-      const query = { search: "?q=Secret", "reference/airports": "?q=Riyadh", customers: "?q=Secret", suppliers: "?q=Secret", products: "?q=Secret", bookings: "?q=Secret" }[rel] ?? "";
-      const res = await call(mod.GET, "GET", `/api/v1/${rel}${query}`, { cookie: B.ownerCookie });
+      const query = {
+        search: "?q=Secret", "reference/airports": "?q=Riyadh", customers: "?q=Secret", suppliers: "?q=Secret", products: "?q=Secret", bookings: "?q=Secret",
+        quotations: "?q=Secret", invoices: "?q=Secret", payments: "?q=Secret", "supplier-bills": "?q=Secret", expenses: "?q=Secret", "reports/[name]": "?from=2026-01-01&to=2026-12-31",
+      }[rel] ?? "";
+      const path = `/api/v1/${rel.replace(/\[(\w+)\]/g, (_, n) => fixed?.[n] ?? n)}${query}`;
+      const res = await call(mod.GET, "GET", path, { cookie: B.ownerCookie, params: fixed ?? {} });
       expect([200, 404], `${rel} → ${res.status}`).toContain(res.status);
       for (const s of aSecrets) expect(res.text, `GET ${rel} leaked ${s}`).not.toContain(s);
     }
@@ -267,11 +354,9 @@ describe("tenantDb scoping (TEN-03) and database guards (TEN-05)", () => {
     await expect(prisma.membershipBranch.create({ data: { tenantId: A.tenantId, membershipId: m.id, branchId: B.branchId } })).rejects.toMatchObject({ code: "P2003" });
   });
 
-  it("TENANT_MODELS lists every schema model with a tenantId column", async () => {
-    const { readFileSync } = await import("node:fs");
-    const schema = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
-    const withTenant = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)].filter(([, , body]) => /^\s+tenantId\s/m.test(body)).map(([, name]) => name);
-    const globalQueue = ["Job"]; // worker-owned queue; tenantId is metadata, jobs re-scope via tenantDb (TEN-08)
-    expect(withTenant.filter((m) => !globalQueue.includes(m)).sort()).toEqual([...TENANT_MODELS].sort());
+  it("GLOBAL_MODELS is exactly the set of models without a tenantId column (plus the job queue)", () => {
+    const withoutTenant = MODELS.filter((m) => !m.tenantScoped && m.name !== "Tenant").map((m) => m.name);
+    expect([...GLOBAL_MODELS].sort()).toEqual([...withoutTenant, "Job"].sort());
+    expect(TENANT_MODELS.length).toBeGreaterThanOrEqual(40);
   });
 });

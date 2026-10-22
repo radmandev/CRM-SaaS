@@ -1,12 +1,107 @@
 # Build Status
 
-Updated: 2026-10-20. Source of truth: [SPEC.md](SPEC.md) §27. Decisions: [docs/architecture-decisions.md](docs/architecture-decisions.md) (ADR-01..23).
+Updated: 2026-10-22. Source of truth: [SPEC.md](SPEC.md) §27. Decisions: [docs/architecture-decisions.md](docs/architecture-decisions.md) (ADR-01..30).
 
 | Phase | Status |
 |---|---|
-| 1. Foundation | Done (commit `ced22ce`); report below |
-| 2. Customers, suppliers, services, bookings | **Done and verified locally** (this report) |
-| 3–6 | Not started |
+| 1. Foundation | Done (commit `ced22ce`) |
+| 2. Customers, suppliers, services, bookings | Done (commit `72ac18d`) |
+| 3. Sales, invoicing, payments, financial reporting | **Done and verified locally** (this report) |
+| 4–6 | Not started |
+
+# Phase 3 report (quotations, invoices, payments, expenses, reports)
+
+**Summary:** verified locally with:
+- typecheck and lint;
+- 328 unit and integration tests against real PostgreSQL;
+- three browser journeys on desktop and mobile, with axe scans;
+- a production build without secrets.
+
+**A critical tenant-isolation bug was found during verification and fixed** (§5). The CI workflow still has not run, because the repository has no remote.
+
+## 1. Implemented requirements
+
+| Area | Requirement IDs | Notes |
+|---|---|---|
+| Quotations | §10.1–10.5, QT-01 (one number across versions), QT-02 (daily expiry job), QT-03 (convert once into a draft booking), QT-05 (signed proposal link without costs, notes or margins), QT-06 (revise → new version, old one superseded), QT-10 (discount / below-cost approval, reset on any price change, also on bookings), QT-12 (lost reasons) | Public acceptance is not offered (ADR-30) |
+| Invoices and credit notes | §11.2, §11.3, INV-01, INV-03 (immutable, SQL triggers), INV-05 (bilingual PDF), INV-06 (standard invoices need the buyer's VAT number and address), INV-07 (credit notes with a reason, capped per line), ONB-01 (no invoice until the seller profile is complete), NUM-02 | Invoices come from a booking's uninvoiced services, or are entered as manual lines |
+| ZATCA | Phase 1 QR (TLV tags 1–5), ICV, UUID, seller and buyer snapshots | Phase 2 is D-04 / Phase 6 (ADR-28) |
+| Payments | §11.4, PAY-01, PAY-02 (deposits as credit, allocated later), PAY-03 (no over-allocation under concurrency), PAY-04 (reversal with approval), PAY-05 (no manual gateway payments) | Receipt PDF |
+| Refunds | §11.5, REF-01 (request → second-person approval → paid), REF-02 (only available credit) | Self-approval is an agency setting |
+| Payables | §11.6, SUP-03 (variance against booked cost), SUP-04, SUP-05 (supplier statement), FIN-06 | |
+| Expenses | §11.7, FIN-08 (approval above the agency limit), FIN-02 (reverse, never delete) | 8 default categories |
+| Cash and bank | §11.8: accounts, transfers with fees, balances computed from transactions | IBAN encrypted |
+| Reports | §11.9: sales, margin, AR aging, AP aging, cash, receipts, expenses, VAT summary, operating result; customer statement (CRM-05) | Base currency at snapshot rates |
+| Documents | Invoice, credit note, receipt, quotation, booking confirmation and voucher PDFs (BKG-13 PDF); download checks permission on the owning record | Rendered by the worker (ADR-27) |
+| Dashboard | §15.1 Phase 3 tiles: sales this/last month, receivables, overdue, received in 7 days, open quotations, conversion rate, top customers | |
+| Security | SEC-21 (card numbers refused in free text, Luhn on whole digit runs) | |
+| Landing page | Public `/` page in Arabic and English with links to every area of the app | Replaces the redirect to `/dashboard` |
+| UI refresh (owner request) | Grouped sidebar with icons and current-page marker, split login/sign-up layout, softer tokens (radii, shadows, focus rings) | Inline SVG icons, no new dependency; axe-clean on desktop and mobile |
+
+## 2. Key files
+
+| Purpose | Path |
+|---|---|
+| Schema + migration (triggers, CHECKs, defaults for existing tenants) | `prisma/schema.prisma`, `prisma/migrations/20261020150000_phase3_sales_finance/` |
+| Fail-closed tenant scoping | `src/server/db/index.ts` (`GLOBAL_MODELS`) |
+| Sales | `src/modules/sales/service.ts` |
+| Finance | `src/modules/finance/{common,invoices,payments,payables,reports,zatca}.ts` |
+| Documents (queue / worker rendering) | `src/modules/documents/{service,render,templates,email,jobs}.ts`, `src/server/pdf.ts` |
+| Schemas | `src/lib/schemas-finance.ts` |
+| Pages | `src/app/(app)/{quotations,invoices,payments,refunds,supplier-bills,supplier-payments,expenses,finance/accounts,reports,settings/finance}/`, `src/app/proposal/[token]/`, `src/app/page.tsx` |
+
+## 3. Commands run and their results (2026-10-20 to 2026-10-22)
+
+| Command | Result |
+|---|---|
+| `prisma migrate diff` → manual migration, `migrate deploy` | Applied to dev and test DBs (`migrate dev` refuses non-interactive runs) |
+| `tsc --noEmit`, `eslint` | Clean |
+| `vitest run` (repeated) | **16 files, 328 tests passed** |
+| `next build` with `.env` removed | Succeeds (after moving PDF rendering out of the app bundle, ADR-27) |
+| Playwright E2E in the official container (desktop + Pixel 7) | **6 passed**: onboarding, booking, and the new finance journey (landing page → seller profile → quotation → sent → accepted → booking → invoice issued with QR → payment → credit note → refund requested, approved, paid → worker-rendered invoice PDF downloaded and checked as `%PDF` → sales report → dashboard); axe scans found no serious or critical issues |
+| `docker build --target runtime` (with Chromium) + run web and worker | Image 1.86 GB (Chromium adds ~0.7 GB). Health ok, landing and login 200, worker started; a PDF with Arabic text renders inside the image as a non-root user |
+
+## 4. Tests added in Phase 3
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `integration/finance` | 14 | ONB-01 gate; issue with number, ICV, UUID and QR decoded; immutability through the API **and direct SQL**; 10 parallel issues → gapless numbers and ICVs; B2B buyer rules; role checks; allocation, over-allocation, idempotent replay; two concurrent payments cannot over-allocate; deposits; reversal with approval; card numbers and manual gateway payments refused; credit-note caps, customer credit, refund with a second approver; bills with variance, large-expense approval, account balances; sales, VAT and AR aging equal the documents; real PDF via Chromium |
+| `integration/sales` | 7 | QT-10 approval and its reset; send, revise (same number), expiry; accept with version check and single conversion; lost reasons; public proposal hides cost, notes and margin, forged token rejected; scope rules; booking confirmation blocked until approved |
+| `integration/tenant-isolation` (extended) | 9 | All 48 new routes with every path parameter filled; model list derived from the schema; `GLOBAL_MODELS` sync check |
+| `integration/authorization` (extended) | + Phase 3 permissions × 7 roles | |
+| `unit/finance` | 7 | ZATCA TLV against ZATCA's published example, card-number detection (including IBANs that must not match), approval rule, rounding |
+| `e2e/finance` | 2 (desktop, mobile) | Full journey above |
+
+## 5. Bugs found and fixed during Phase 3 verification
+
+1. **CRITICAL — cross-tenant access (fixed):** the Prisma tenant extension only scoped the models in an allow-list, and the new finance models were missing from it. In the isolation test, tenant B approved tenant A's expense, and the audit entry leaked. Scoping now fails closed: every model is scoped unless it is explicitly global (ADR-24). The test that caught it now also fails if a new model is neither scoped nor declared global.
+2. **Card-number false positive:** 13–19-digit windows inside IBANs were flagged as card numbers. Detection now checks whole digit runs only.
+3. **Production build failure:** Next refuses `react-dom/server` in the app bundle; PDF rendering moved to worker-only modules (ADR-27).
+4. **Mobile layout:** wide tables pushed detail pages past the screen width, so fields covered buttons (found by the mobile E2E). Grid columns now shrink (`min-w-0`), and the tables use the keyboard-scrollable `TableScroll` region.
+5. **Accessibility:** disclosure toggles were below the 24 px target size (WCAG 2.2). They now have a minimum height.
+6. **Dashboard money math** used floating point. It now uses `Decimal`.
+7. **Contrast:** the first version of the new sidebar marked the current page with teal text on a teal tint (below 4.5:1); found by the axe scan and fixed.
+
+## 6. Known issues and deviations (need review)
+
+1. "finance:approve" is mapped to `refund:approve` (ADR-25).
+2. Deviations in ADR-30: streamed downloads instead of presigned URLs, no public quotation acceptance, no follow-up tasks or CSV exports until Phase 4.
+3. ZATCA Phase 2 (hash chain, XML, signing, clearance) is not built; invoices are Phase 1 only (ADR-28). **A tax adviser should review the invoice layout and VAT treatment before production use.**
+4. **`SKIP_EMAIL_VERIFICATION`** (added at the owner's request for local demos): sign-in without confirming the email. Env validation refuses it unless `APP_URL` is localhost, and the test setup pins it off. Locally, emails go to Mailpit, not to real inboxes (D-06).
+5. The approval threshold, expense limit and quotation validity are per-agency settings with defaults of 10 %, 5,000 and 7 days.
+6. The Docker VM on this machine has 4 GB; E2E runs use one worker, and the finance journey takes about 2 min on desktop and 5–6 min in mobile emulation.
+7. All Phase 1 and 2 items below still apply.
+
+## 7. Phase 3 acceptance criteria (SPEC §27)
+
+| Criterion | Status |
+|---|---|
+| Quotation → booking → invoice → payment → credit note → refund works end to end in the UI | **Met** (E2E on desktop and mobile; integration tests) |
+| Issued invoices cannot be changed, through any route or directly in the database | **Met** (API tests and direct SQL attempts blocked by triggers) |
+| Invoice numbers and ICVs are gapless and unique under concurrency | **Met** (10 parallel issues) |
+| Payments cannot over-allocate, and duplicate requests are safe | **Met** (concurrent payments; Idempotency-Key replay) |
+| Reports equal the underlying documents | **Met** for sales, VAT and AR aging (test); the other reports use the same sources |
+| Cross-tenant isolation holds for every new route | **Met** after the fix in §5.1 |
 
 # Phase 2 report (customers, suppliers, travel services, bookings)
 

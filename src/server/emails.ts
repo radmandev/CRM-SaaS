@@ -37,6 +37,14 @@ export const emails = {
     const t = translator(loc(locale));
     return render(loc(locale), to, t("email.signupExisting.subject"), [t("email.signupExisting.body"), t("email.ignore")], { url, label: t("email.signupExisting.cta") });
   },
+  invoice(locale: string, to: string, agency: string, number: string) {
+    const t = translator(loc(locale));
+    return render(loc(locale), to, t("email.invoice.subject", { agency, number }), [t("email.invoice.body", { agency, number })]);
+  },
+  quotation(locale: string, to: string, agency: string, number: string, url: string) {
+    const t = translator(loc(locale));
+    return render(loc(locale), to, t("email.quotation.subject", { agency, number }), [t("email.quotation.body", { agency }), t("email.quotation.disclaimer")], { url, label: t("email.quotation.cta") });
+  },
   invitation(locale: string, to: string, agency: string, inviter: string, url: string) {
     const t = translator(loc(locale));
     return render(loc(locale), to, t("email.invite.subject", { agency }), [t("email.invite.body", { agency, inviter }), t("email.invite.expiry")], {

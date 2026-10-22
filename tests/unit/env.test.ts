@@ -32,4 +32,9 @@ describe("environment validation", () => {
     await expect(load({ ENCRYPTION_KEYS: '{"k1":"c2hvcnQ="}' })).rejects.toThrow(/ENCRYPTION_KEYS/);
     await expect(load({ ENCRYPTION_ACTIVE_KEY_ID: "missing" })).rejects.toThrow(/ENCRYPTION_ACTIVE_KEY_ID/);
   });
+  it("allows skipping email verification only on a local APP_URL (AUTH-05)", async () => {
+    await expect(load({ SKIP_EMAIL_VERIFICATION: "true" })).rejects.toThrow(/SKIP_EMAIL_VERIFICATION/);
+    expect((await load({ SKIP_EMAIL_VERIFICATION: "true", APP_URL: "http://localhost:3000" })).SKIP_EMAIL_VERIFICATION).toBe(true);
+    expect((await load({})).SKIP_EMAIL_VERIFICATION).toBe(false);
+  });
 });

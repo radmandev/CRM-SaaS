@@ -13,6 +13,7 @@ import { hit } from "@/server/db/raw/rate-limit";
 import { logger } from "@/server/logger";
 import { nextSequenceValue } from "@/server/db/raw/sequences";
 import { DEFAULT_PREFIXES, SERIES, type agencySchema, type numberingSchema, type signupSchema } from "@/lib/schemas";
+import type { financeSettingsSchema } from "@/lib/schemas-finance";
 
 const TRIAL_DAYS = 14;
 
@@ -22,6 +23,11 @@ const KSA_TAX_RATES = [
   { code: "ZERO", nameEn: "Zero-rated", nameAr: "خاضع لنسبة الصفر", rate: "0", category: "ZERO_RATED", zatcaCode: "Z" },
   { code: "EXEMPT", nameEn: "Exempt", nameAr: "معفى", rate: "0", category: "EXEMPT", zatcaCode: "E" },
   { code: "OUT", nameEn: "Out of scope", nameAr: "خارج نطاق الضريبة", rate: "0", category: "OUT_OF_SCOPE", zatcaCode: "O" },
+] as const;
+
+const EXPENSE_CATEGORIES = [
+  ["Rent", "الإيجار"], ["Salaries", "الرواتب"], ["Utilities", "المرافق"], ["Marketing", "التسويق"], ["Software", "البرمجيات"],
+  ["Bank charges", "رسوم بنكية"], ["Government fees", "رسوم حكومية"], ["Other", "أخرى"],
 ] as const;
 
 /**
@@ -73,6 +79,9 @@ async function createTenant(userId: string, input: z.infer<typeof signupSchema>)
       data: { tenantId: tenant.id, userId, role: "OWNER", primaryBranchId: branch.id, branches: { create: { branchId: branch.id } } },
     });
     await tx.taxRate.createMany({ data: KSA_TAX_RATES.map((r) => ({ ...r, tenantId: tenant.id })) });
+    // §11.7/11.8 defaults (same as the Phase 3 migration does for existing agencies).
+    await tx.financialAccount.createMany({ data: ([{ name: "Cash box", type: "CASH" }, { name: "Main bank account", type: "BANK" }] as const).map((a) => ({ ...a, tenantId: tenant.id, currency: tenant.baseCurrency })) });
+    await tx.expenseCategory.createMany({ data: EXPENSE_CATEGORIES.map(([nameEn, nameAr]) => ({ tenantId: tenant.id, nameEn, nameAr })) });
     // CUR-05: USD/SAR official peg, editable.
     await tx.exchangeRate.create({ data: { tenantId: tenant.id, fromCurrency: "USD", toCurrency: "SAR", rate: "3.75", effectiveDate: new Date(new Date().toISOString().slice(0, 10)) } });
     const actor = { type: "USER" as const, id: userId };
@@ -183,4 +192,25 @@ export async function nextDocumentNumber(tx: TenantTx, tenantId: string, series:
   const year = date.getUTCFullYear();
   const value = await nextSequenceValue(tx, tenantId, series, year);
   return `${prefix}-${year}-${String(value).padStart(6, "0")}`;
+}
+
+// ───────── Sales & finance settings (§10.4, FIN-08, REF-01) ─────────
+
+const FINANCE_FIELDS = ["discountApprovalPercent", "expenseApprovalLimit", "refundSelfApproval", "quotationValidityDays", "quotationTermsEn", "quotationTermsAr"] as const;
+
+export async function getFinanceSettings(ctx: Pick<Ctx, "db" | "tenant">) {
+  const t = await ctx.db.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id }, select: Object.fromEntries(FINANCE_FIELDS.map((f) => [f, true])) as Record<(typeof FINANCE_FIELDS)[number], true> });
+  return { ...t, discountApprovalPercent: t.discountApprovalPercent.toString(), expenseApprovalLimit: t.expenseApprovalLimit.toString() };
+}
+
+export async function updateFinanceSettings(ctx: Ctx, input: z.infer<typeof financeSettingsSchema>) {
+  authorize(ctx, "tenant:settings");
+  await ctx.db.$transaction(async (tx) => {
+    const before = await getFinanceSettings({ db: tx as unknown as Ctx["db"], tenant: ctx.tenant });
+    const data = { ...input, quotationTermsEn: input.quotationTermsEn ?? null, quotationTermsAr: input.quotationTermsAr ?? null };
+    await tx.tenant.update({ where: { id: ctx.tenant.id }, data });
+    const changes = diff(before, data);
+    if (changes) await audit(tx, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "tenant.finance_settings_updated", entityType: "Tenant", entityId: ctx.tenant.id, changes });
+  });
+  return getFinanceSettings(ctx);
 }

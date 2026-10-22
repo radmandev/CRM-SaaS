@@ -9,6 +9,10 @@ import { pageCtx, pageT } from "@/server/page";
 import { getBooking, getItinerary } from "@/modules/bookings/service";
 import { ITEM_TRANSITIONS } from "@/modules/bookings/rules";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { DocumentLinks } from "@/components/documents";
+import { invoiceTone, MANUAL_METHODS } from "@/components/finance";
+import { can } from "@/server/context";
+import { latestDocuments } from "@/modules/documents/service";
 import type { BookingItemStatus } from "@/generated/prisma/enums";
 
 export const metadata = { title: "Booking" };
@@ -23,12 +27,17 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
     if (e instanceof AppError && e.status === 404) notFound();
     throw e;
   });
-  const [itinerary, suppliers, taxRates, travelers] = await Promise.all([
+  const finance = can(ctx, "invoice:read");
+  const [itinerary, suppliers, taxRates, travelers, invoices, accounts, docs] = await Promise.all([
     getItinerary(ctx, id),
     b.permissions.write ? ctx.db.supplier.findMany({ where: { archivedAt: null }, orderBy: { nameEn: "asc" }, take: 300 }) : Promise.resolve([]),
     b.permissions.write ? ctx.db.taxRate.findMany({ where: { active: true }, orderBy: { code: "asc" } }) : Promise.resolve([]),
     b.permissions.direct ? ctx.db.traveler.findMany({ where: { customerId: b.customerId, archivedAt: null }, orderBy: { createdAt: "asc" } }) : Promise.resolve([]),
+    finance ? ctx.db.invoice.findMany({ where: { bookingId: id }, orderBy: { createdAt: "asc" }, select: { id: true, kind: true, status: true, number: true, total: true, amountPaid: true, amountCredited: true } }) : Promise.resolve([]),
+    can(ctx, "payment:record") ? ctx.db.financialAccount.findMany({ where: { active: true, currency: b.currency }, orderBy: { name: "asc" } }) : Promise.resolve([]),
+    Promise.all([latestDocuments(ctx, "Booking", [id]), latestDocuments(ctx, "BookingItem", b.items.map((i) => i.id))]).then(([x, y]) => [...x, ...y]),
   ]);
+  const uninvoiced = b.items.some((i) => i.status !== "CANCELLED" && i.status !== "FAILED" && i.invoicedQuantity < i.quantity);
   const p = b.permissions;
   const money = (v: { toString(): string } | string | null | undefined) => <Money value={v == null ? null : v.toString()} currency={b.currency} locale={locale} />;
   const paxName = (x: { title: string | null; firstName: string; lastName: string }) => [x.title, x.firstName, x.lastName].filter(Boolean).join(" ");
@@ -52,8 +61,14 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
         }
       />
       <p role="note" className="mb-4 text-xs text-muted">{t("booking.manualNote")}</p>
+      {b.requiresApproval && !b.approvedAt && (
+        <div role="status" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950">
+          <span>{t("booking.approvalNeeded")}</span>
+          {can(ctx, "quotation:approve-discount") && p.direct && <ActionButton url={`/api/v1/bookings/${b.id}/approve`} label={t("quote.approve")} locale={locale} />}
+        </div>
+      )}
 
-      <div className="grid gap-6 xl:grid-cols-3">
+      <div className="grid gap-6 xl:grid-cols-3 [&>*]:min-w-0">
         <div className="space-y-6 xl:col-span-2">
           {/* ───────── Services ───────── */}
           <section className="card" aria-labelledby="services">
@@ -301,6 +316,47 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
               ))}
             </dl>
             <p className="mt-2 text-xs text-muted">{b.pricesIncludeTax ? t("booking.pricesInclusive") : t("booking.pricesExclusive")}{b.currency !== "SAR" ? ` · 1 ${b.currency} = ${b.exchangeRate.toString()}` : ""}</p>
+          </section>
+
+          {finance && (
+            <section className="card space-y-3" aria-labelledby="billing">
+              <h2 id="billing" className="font-semibold">{t("booking.billing")}</h2>
+              {invoices.length === 0 ? <p className="text-sm text-muted">{t("booking.noInvoices")}</p> : (
+                <ul className="space-y-1 text-sm">
+                  {invoices.map((i) => {
+                    const outstanding = i.kind === "INVOICE" ? i.total.minus(i.amountCredited).minus(i.amountPaid) : null;
+                    return (
+                      <li key={i.id} className="flex items-center justify-between gap-2">
+                        <Link className="underline" href={`/invoices/${i.id}`} dir="ltr">{i.number ?? t("invStatus.DRAFT")}</Link>
+                        <span className="flex items-center gap-2">{money(i.total)}<StatusBadge status={invoiceTone({ ...i, outstanding })} label={i.status === "DRAFT" ? t("invStatus.DRAFT") : i.kind === "CREDIT_NOTE" ? t("invKind.CREDIT_NOTE") : Number(outstanding) <= 0 ? t("inv.paid") : t("inv.unpaid")} /></span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {can(ctx, "invoice:issue") && uninvoiced && <ActionButton url="/api/v1/invoices" body={{ bookingId: b.id }} label={t("booking.createInvoice")} locale={locale} />}
+              {accounts.length > 0 && b.status !== "CANCELLED" && (
+                <details className="text-sm">
+                  <summary className="cursor-pointer underline">{t("booking.recordDeposit")}</summary>
+                  <p className="mt-2 text-xs text-muted">{t("booking.depositHint")}</p>
+                  <ApiForm action="/api/v1/payments" schema="payment" locale={locale} submitLabel={t("pay.record")} extra={{ customerId: b.customerId, bookingId: b.id, currency: b.currency }} resetOnSuccess className="mt-2 space-y-2">
+                    <Field name="amount" label={t("pay.amount")} dir="ltr" required />
+                    <Field name="date" type="date" label={t("item.date")} defaultValue={new Date().toISOString().slice(0, 10)} required />
+                    <Field name="method" label={t("pay.method")} options={MANUAL_METHODS.map((m) => ({ value: m, label: t(`method.${m}`) }))} />
+                    <Field name="financialAccountId" label={t("pay.account")} options={accounts.map((a) => ({ value: a.id, label: a.name }))} />
+                    <Field name="reference" label={t("pay.reference")} dir="ltr" />
+                  </ApiForm>
+                </details>
+              )}
+            </section>
+          )}
+
+          <section className="card" aria-labelledby="bdocs">
+            <h2 id="bdocs" className="mb-3 font-semibold">{t("docs.title")}</h2>
+            <DocumentLinks docs={docs} requestUrl={`/api/v1/bookings/${b.id}/documents`} requestBody={{ kind: "CONFIRMATION" }} label={t("docs.confirmation")} locale={locale} t={t} />
+            {b.items.filter((i) => i.status === "CONFIRMED" || i.status === "ISSUED").map((i) => (
+              <div key={i.id} className="mt-2"><ActionButton url={`/api/v1/bookings/${b.id}/documents`} body={{ kind: "VOUCHER", itemId: i.id }} label={`${t("docs.voucher")}: ${i.description}`} locale={locale} /></div>
+            ))}
           </section>
 
           <section className="card" aria-labelledby="customer">

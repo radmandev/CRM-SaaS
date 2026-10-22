@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { ApiForm, Checkbox, Field } from "@/components/api-form";
 import { ActionButton } from "@/components/actions";
 import { RevealButton } from "@/components/travel";
-import { EmptyState, PageHeader, StatusBadge } from "@/components/ui";
+import { EmptyState, Money, PageHeader, StatusBadge, TableScroll } from "@/components/ui";
 import { can } from "@/server/context";
 import { AppError } from "@/server/errors";
 import { pageCtx, pageT } from "@/server/page";
@@ -11,11 +11,15 @@ import { customerTimeline, getCustomer } from "@/modules/crm/service";
 import { listBookings } from "@/modules/bookings/service";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { expiresWithin } from "@/lib/travel";
+import { customerBalances } from "@/modules/finance/common";
+import { customerStatement } from "@/modules/finance/reports";
+import { statementQuery } from "@/lib/schemas-finance";
 
 export const metadata = { title: "Customer" };
 
-export default async function CustomerPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function CustomerPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
   const { id } = await params;
+  const sp = await searchParams;
   const ctx = await pageCtx();
   const { locale, t } = await pageT();
   const c = await getCustomer(ctx, id).catch((e) => {
@@ -27,6 +31,11 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
     can(ctx, "booking:read") ? listBookings(ctx, { customerId: id, limit: 20 }) : Promise.resolve({ data: [] }),
     ctx.db.branch.findMany({ where: { archivedAt: null }, orderBy: { code: "asc" } }),
   ]);
+  const finance = can(ctx, "invoice:read");
+  const balances = finance ? await customerBalances(ctx.db, id) : [];
+  // FIN-05: statement for a period in one currency, opened from the balance card.
+  const st = finance && sp.from && sp.to ? statementQuery.safeParse({ from: sp.from, to: sp.to }) : null;
+  const statement = st?.success ? await customerStatement(ctx, id, st.data.from, st.data.to, sp.currency || balances[0]?.currency || "SAR") : null;
   const w = c.canWrite && !c.archivedAt;
   const today = new Date().toISOString().slice(0, 10);
   const opts = (keys: string[], prefix: string) => keys.map((v) => ({ value: v, label: t(`${prefix}.${v}`) }));
@@ -73,7 +82,7 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
         </section>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6 lg:grid-cols-3 [&>*]:min-w-0">
         <div className="space-y-6 lg:col-span-2">
           <section className="card" aria-labelledby="profile">
             <h2 id="profile" className="mb-4 font-semibold">{t("crm.profile")}</h2>
@@ -205,6 +214,35 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
         </div>
 
         <div className="space-y-6">
+          {finance && (
+            <section className="card space-y-3" aria-labelledby="balance">
+              <h2 id="balance" className="font-semibold">{t("crm.balance")}</h2>
+              {balances.length === 0 ? <p className="text-sm text-muted">{t("crm.noFinance")}</p> : balances.map((b) => (
+                <dl key={b.currency} className="space-y-1 text-sm">
+                  {(["invoiced", "credited", "paid", "refunded"] as const).map((k) => <div key={k} className="flex justify-between"><dt>{t(`repKey.${k}`)}</dt><dd><Money value={b[k].toString()} currency={b.currency} locale={locale} /></dd></div>)}
+                  <div className="flex justify-between border-t border-line pt-1 font-semibold"><dt>{b.balance.isNegative() ? t("crm.inCredit") : t("crm.owes")}</dt><dd><Money value={b.balance.abs().toString()} currency={b.currency} locale={locale} /></dd></div>
+                </dl>
+              ))}
+              <form action={`/customers/${id}#balance`} className="grid gap-2 text-sm sm:grid-cols-2">
+                <label>{t("rep.from")}<input className="input mt-1 block w-full" type="date" name="from" defaultValue={sp.from ?? `${today.slice(0, 4)}-01-01`} required /></label>
+                <label>{t("rep.to")}<input className="input mt-1 block w-full" type="date" name="to" defaultValue={sp.to ?? today} required /></label>
+                {balances.length > 1 && <select name="currency" className="input" defaultValue={sp.currency} aria-label={t("suppliers.currency")}>{balances.map((b) => <option key={b.currency}>{b.currency}</option>)}</select>}
+                <button className="btn-secondary">{t("crm.statement")}</button>
+              </form>
+              {statement && (
+                <TableScroll label={t("crm.statement")}>
+                  <table className="table text-xs">
+                    <thead><tr><th scope="col">{t("item.date")}</th><th scope="col">{t("crm.document")}</th><th scope="col">{t("crm.debit")}</th><th scope="col">{t("crm.credit")}</th><th scope="col">{t("booking.balance")}</th></tr></thead>
+                    <tbody>
+                      <tr><td colSpan={4}>{t("crm.opening")}</td><td dir="ltr">{statement.opening}</td></tr>
+                      {statement.lines.map((l, n) => <tr key={n}><td dir="ltr">{l.date}</td><td dir="ltr">{l.number}</td><td dir="ltr">{l.debit}</td><td dir="ltr">{l.credit}</td><td dir="ltr">{l.balance}</td></tr>)}
+                      <tr className="font-semibold"><td colSpan={4}>{t("crm.closing")} ({statement.currency})</td><td dir="ltr">{statement.closing}</td></tr>
+                    </tbody>
+                  </table>
+                </TableScroll>
+              )}
+            </section>
+          )}
           <section className="card" aria-labelledby="contacts">
             <h2 id="contacts" className="mb-3 font-semibold">{t("crm.contacts")}</h2>
             <ul className="space-y-2 text-sm">

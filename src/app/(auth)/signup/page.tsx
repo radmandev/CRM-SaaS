@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ApiForm, Field } from "@/components/api-form";
 import { pageT, pageUser } from "@/server/page";
+import { env } from "@/server/env";
 
 export const metadata = { title: "Sign up" };
 
@@ -15,7 +16,7 @@ export default async function SignupPage() {
     <>
       <h1 className="mb-1 text-xl font-bold">{t("auth.signup.title")}</h1>
       <p className="mb-4 text-sm text-muted">{t("auth.signup.subtitle")}</p>
-      <ApiForm action="/api/v1/signup" schema="signup" locale={locale} submitLabel={t("auth.signup.submit")} redirectTo="/signup/check-email">
+      <ApiForm action="/api/v1/signup" schema="signup" locale={locale} submitLabel={t("auth.signup.submit")} redirectTo={env().SKIP_EMAIL_VERIFICATION ? "/login" : "/signup/check-email"}>
         <Field name="agencyName" label={t("field.agencyName")} required maxLength={200} />
         <Field name="slug" label={t("field.slug")} required dir="ltr" hint={t("field.slugHint")} maxLength={40} />
         <Field name="country" label={t("field.country")} defaultValue="SA" options={COUNTRIES.map((c) => ({ value: c, label: names.of(c) ?? c }))} />

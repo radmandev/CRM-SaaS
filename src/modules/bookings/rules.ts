@@ -77,6 +77,18 @@ export function totals({ inclusive, currency, items, amendments }: TotalsInput) 
   };
 }
 
+/**
+ * QT-10 / SVC-08: a quote or booking needs a manager's approval when the total discount exceeds the tenant's
+ * threshold (percent of gross) or any active line sells below cost.
+ */
+export function needsApproval(items: (ItemAmounts & { status?: BookingItemStatus })[], thresholdPercent: Money): boolean {
+  const active = items.filter((i) => !i.status || isActive(i.status));
+  const gross = sum(active.map((i) => i.sellAmount.plus(i.serviceFeeAmount)));
+  const discount = sum(active.map((i) => i.discountAmount));
+  if (!gross.isZero() && discount.times(100).dividedBy(gross).greaterThan(thresholdPercent)) return true;
+  return active.some((i) => customerPrice(i).lessThan(i.costAmount));
+}
+
 // ───────── Dates and itinerary (§8.5) ─────────
 
 type Details = Record<string, unknown>;

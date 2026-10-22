@@ -26,7 +26,7 @@ jobs:
         env: { DATABASE_URL: postgresql://app:app@localhost:5432/travel }
       - name: Unit + integration tests (real PostgreSQL)
         run: npm test
-        env: { TEST_DATABASE_URL: postgresql://app:app@localhost:5432/travel_test, S3_ENDPOINT: http://localhost:8333, S3_REGION: us-east-1, S3_ACCESS_KEY_ID: dev, S3_SECRET_ACCESS_KEY: dev, S3_FORCE_PATH_STYLE: "true" }
+        env: { TEST_DATABASE_URL: postgresql://app:app@localhost:5432/travel_test, S3_ENDPOINT: http://localhost:8333, S3_REGION: us-east-1, S3_ACCESS_KEY_ID: dev, S3_SECRET_ACCESS_KEY: dev, S3_FORCE_PATH_STYLE: "true", CHROME_PATH: /usr/bin/google-chrome, ENCRYPTION_KEYS: '{"k1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}', ENCRYPTION_ACTIVE_KEY_ID: k1, HMAC_KEY: ci-hmac-key-ci-hmac-key-ci-hmac-key-123 }
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=high
       - name: Production build without runtime secrets

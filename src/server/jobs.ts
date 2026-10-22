@@ -21,6 +21,25 @@ export const enqueueEmail = (db: JobWriter, email: Email, tenantId?: string | nu
 
 const DAY = 86_400_000;
 
+type Handler = (job: Job) => Promise<void>;
+type WorkerOnly = "pdf.render" | "document.email";
+
+/**
+ * PDF jobs need react-dom/server and Chromium, which Next refuses in app bundles (even behind a dynamic
+ * import), so the worker registers them at start-up (src/modules/documents/jobs.ts). The web app only enqueues.
+ */
+const registered: Partial<Record<WorkerOnly, Handler>> = {};
+export function registerWorkerHandlers(h: Partial<Record<WorkerOnly, Handler>>) {
+  Object.assign(registered, h);
+}
+function workerOnly(type: WorkerOnly): Handler {
+  return async (job) => {
+    const h = registered[type];
+    if (!h) throw new Error(`${type} runs in the worker process only`);
+    await h(job);
+  };
+}
+
 // Handlers must be idempotent (JOB-03): a crash after the side effect but before the status update re-runs them.
 const handlers = {
   "email.send": async (job: Job) => {
@@ -28,6 +47,12 @@ const handlers = {
     // The body may contain one-time links; keep only the envelope once sent.
     const { to, subject } = job.payload as unknown as Email;
     await prisma.job.update({ where: { id: job.id }, data: { payload: { to, subject, bodyRemoved: true } } });
+  },
+  "pdf.render": workerOnly("pdf.render"),
+  "document.email": workerOnly("document.email"),
+  "quotations.expire": async () => {
+    const { expireQuotations } = await import("@/modules/sales/service");
+    await expireQuotations();
   },
   "bookings.complete": async () => {
     const { completeFinishedBookings } = await import("@/modules/bookings/service"); // lazy: avoids an import cycle
@@ -76,6 +101,7 @@ export async function tick(workerId: string, batch = 10, types?: JobType[]): Pro
   const day = new Date().toISOString().slice(0, 10);
   await enqueue(prisma, "maintenance.cleanup", {}, { dedupeKey: `maintenance.cleanup:${day}` }); // JOB-05
   await enqueue(prisma, "bookings.complete", {}, { dedupeKey: `bookings.complete:${day}` });
+  await enqueue(prisma, "quotations.expire", {}, { dedupeKey: `quotations.expire:${day}` }); // QT-02
   const jobs = await claimJobs(workerId, batch, types);
   for (const job of jobs) await runJob(job);
   return jobs.length;

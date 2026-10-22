@@ -1,5 +1,6 @@
 import * as base from "./schemas";
 import * as travel from "./schemas-travel";
+import * as finance from "./schemas-finance";
 
 /** Schemas the browser form component can look up by name (client-side validation, FR-05). */
 export const formSchemas = {
@@ -38,5 +39,20 @@ export const formSchemas = {
   itineraryNote: travel.itineraryNoteSchema,
   amendment: travel.amendmentSchema,
   version: travel.versionSchema,
+  quotationCreate: finance.quotationCreateSchema,
+  quotationUpdate: finance.quotationUpdateSchema,
+  invoiceLine: finance.invoiceLineSchema,
+  invoiceUpdate: finance.invoiceUpdateSchema,
+  creditNote: finance.creditNoteSchema,
+  payment: finance.paymentSchema,
+  reverse: finance.reverseSchema,
+  refundRequest: finance.refundRequestSchema,
+  refundPaid: finance.refundPaidSchema,
+  supplierBill: finance.supplierBillSchema,
+  supplierPayment: finance.supplierPaymentSchema,
+  expense: finance.expenseSchema,
+  financialAccount: finance.financialAccountSchema,
+  transfer: finance.transferSchema,
+  financeSettings: finance.financeSettingsSchema,
 } as const;
 export type FormSchemaName = keyof typeof formSchemas;

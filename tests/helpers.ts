@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { prisma } from "@/server/db";
 import { runJob } from "@/server/jobs";
+import "@/modules/documents/jobs"; // run PDF jobs like the worker does
 import { fakeOutbox, type Email } from "@/server/email";
 import * as authRoute from "@/app/api/auth/[...all]/route";
 import * as signupRoute from "@/app/api/v1/signup/route";

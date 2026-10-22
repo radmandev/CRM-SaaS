@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import { env } from "./server/env";
 import { logger } from "./server/logger";
 import { tick } from "./server/jobs";
+import "./modules/documents/jobs"; // registers the PDF job handlers
 import { prisma } from "./server/db";
 
 // JOB-02: separate worker process. Safe to run several replicas (SKIP LOCKED).

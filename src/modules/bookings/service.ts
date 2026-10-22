@@ -1,4 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import type { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import type { BookingItemStatus, BookingStatus } from "@/generated/prisma/enums";
@@ -12,14 +11,16 @@ import { assertBranchAllowed, assertWritable, inScope, scopeWhere } from "@/serv
 import { decrypt, encrypt, last4, lookupHash, mask, normalizeId } from "@/server/crypto";
 import { D, str } from "@/server/money";
 import { lockBooking } from "@/server/db/raw/bookings";
+import { createLink, verifyLink } from "@/server/signed-links";
 import { nextDocumentNumber } from "@/modules/tenancy/service";
 import { suggestCommission } from "@/modules/suppliers/service";
 import { paxType } from "@/lib/travel";
+import { rateToBase } from "@/modules/finance/common";
 import {
   bookingItemSchema, DETAILS_VERSION, type amendmentSchema, type bookingCreateSchema, type BookingItemInput, type bookingListQuery,
   type bookingUpdateSchema, type cancelItemSchema, type itemChangesSchema, type itemStatusSchema, type itineraryNoteSchema, type passengerSchema,
 } from "@/lib/schemas-travel";
-import { buildItinerary, canTransition, deriveStatus, describe, isActive, isClosed, isDirectlyEditable, itemDates, itemTax, totals } from "./rules";
+import { buildItinerary, canTransition, deriveStatus, describe, isActive, isClosed, isDirectlyEditable, itemDates, itemTax, needsApproval, totals } from "./rules";
 
 const isoDate = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
 const day = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -55,7 +56,7 @@ async function history(tx: TenantTx, tenantId: string, bookingId: string, from: 
 }
 
 /** Recompute totals, travel dates, destination summary and derived status; bump the version (BKG-04, BKG-21). */
-async function recalc(tx: TenantTx, tenantId: string, bookingId: string, actor: Actor) {
+export async function recalc(tx: TenantTx, tenantId: string, bookingId: string, actor: Actor) {
   const b = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { items: { include: { cancellation: true }, orderBy: { sortOrder: "asc" } }, amendments: { where: { status: "APPLIED" } } } });
   const t = totals({
     inclusive: b.pricesIncludeTax,
@@ -75,10 +76,12 @@ async function recalc(tx: TenantTx, tenantId: string, bookingId: string, actor: 
     ),
   ].slice(0, 3);
   const status = deriveStatus(b.status, b.confirmedAt, b.items);
+  const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { discountApprovalPercent: true } });
   await tx.booking.update({
     where: { id: bookingId },
     data: {
       ...t,
+      requiresApproval: needsApproval(b.items, tenant.discountApprovalPercent), // QT-10
       balance: t.grandTotal.minus(b.paidTotal),
       travelStartDate: starts.length ? day(starts[0]) : null,
       travelEndDate: ends.length ? day(ends.at(-1)!) : null,
@@ -173,11 +176,20 @@ export async function getBooking(ctx: Ctx, id: string) {
 
 // ───────── Booking lifecycle ─────────
 
-async function rateToBase(tx: TenantTx, from: string, base: string): Promise<string> {
-  if (from === base) return "1";
-  const r = await tx.exchangeRate.findFirst({ where: { fromCurrency: from, toCurrency: base, effectiveDate: { lte: day(today()) } }, orderBy: { effectiveDate: "desc" } });
-  if (!r) throw unprocessable("NO_EXCHANGE_RATE", `Add an exchange rate ${from} → ${base} first`, "currency");
-  return r.rate.toString();
+/** QT-10: any price change invalidates an earlier discount approval. */
+async function resetApproval(tx: TenantTx, bookingId: string) {
+  await tx.booking.updateMany({ where: { id: bookingId, approvedAt: { not: null } }, data: { approvedAt: null, approvedById: null } });
+}
+
+export async function approveBooking(ctx: Ctx, id: string) {
+  return ctx.db.$transaction(async (tx) => {
+    const b = await writableBooking(ctx, tx, id, { direct: true });
+    if (!inScope(ctx, "quotation:approve-discount", b)) throw forbidden();
+    if (!b.requiresApproval) throw unprocessable("APPROVAL_NOT_NEEDED", "This booking needs no approval");
+    await tx.booking.update({ where: { id }, data: { approvedAt: new Date(), approvedById: ctx.user.id, version: { increment: 1 } } });
+    await audit(tx, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "booking.discount_approved", entityType: "Booking", entityId: id, metadata: { grandTotal: b.grandTotal.toString(), costTotal: b.costTotal.toString() } });
+    return { id };
+  });
 }
 
 export async function createBooking(ctx: Ctx, input: z.infer<typeof bookingCreateSchema>) {
@@ -241,6 +253,7 @@ export async function confirmBooking(ctx: Ctx, id: string, version: number) {
     if (!active.length) throw unprocessable("NO_ACTIVE_ITEMS", "Add at least one service first");
     if (active.some((i) => i.status !== "CONFIRMED" && i.status !== "ISSUED")) throw unprocessable("ITEMS_NOT_CONFIRMED", "Every service must be confirmed by its supplier first");
     if (!(await tx.bookingPassenger.count({ where: { bookingId: id } }))) throw unprocessable("NO_PASSENGERS", "Add the passengers first");
+    if (b.requiresApproval && !b.approvedAt) throw unprocessable("APPROVAL_REQUIRED", "A manager must approve the discount or below-cost price first");
     await tx.booking.update({ where: { id }, data: { confirmedAt: new Date() } });
     const status = await recalc(tx, ctx.tenant.id, id, ctx.actor);
     await history(tx, ctx.tenant.id, id, b.status, status, ctx.actor, "customer confirmed");
@@ -273,7 +286,7 @@ export async function cancelBooking(ctx: Ctx, id: string, version: number, reaso
 
 // ───────── Items (§7.1, §8.3) ─────────
 
-async function resolveItem(ctx: Ctx, tx: TenantTx, b: { id: string; currency: string; pricesIncludeTax: boolean }, input: BookingItemInput) {
+export async function resolveItem(ctx: Ctx, tx: TenantTx, b: { id: string; currency: string; pricesIncludeTax: boolean }, input: BookingItemInput) {
   if (input.supplierId && !(await tx.supplier.count({ where: { id: input.supplierId, archivedAt: null } }))) throw unprocessable("INVALID_SUPPLIER", "Supplier not found", "supplierId");
   if (input.productId && !(await tx.product.count({ where: { id: input.productId, active: true } }))) throw unprocessable("INVALID_PRODUCT", "Product not found", "productId");
   if (input.serviceType === "FLIGHT") {
@@ -332,6 +345,7 @@ export async function addItem(ctx: Ctx, bookingId: string, input: BookingItemInp
     const item = await tx.bookingItem.create({ data: { ...data, tenantId: ctx.tenant.id, bookingId, sortOrder } as Prisma.BookingItemUncheckedCreateInput });
     await history(tx, ctx.tenant.id, bookingId, null, "REQUESTED", ctx.actor, null, item.id);
     await audit(tx, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "booking_item.created", entityType: "BookingItem", entityId: item.id, parentEntityType: "Booking", parentEntityId: bookingId, metadata: { serviceType: item.serviceType, sell: str(D(item.sellAmount)) } });
+    await resetApproval(tx, bookingId);
     await recalc(tx, ctx.tenant.id, bookingId, ctx.actor);
     return { id: item.id, commissionAmount: item.commissionAmount.toString(), taxAmount: item.taxAmount.toString() };
   });
@@ -381,6 +395,7 @@ export async function updateItem(ctx: Ctx, bookingId: string, itemId: string, ch
     const b = await writableBooking(ctx, tx, bookingId, { direct: true });
     const changed = await applyItemChanges(ctx, tx, b, itemId, changes);
     if (changed) await audit(tx, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "booking_item.updated", entityType: "BookingItem", entityId: itemId, parentEntityType: "Booking", parentEntityId: bookingId, changes: changed });
+    if (changed) await resetApproval(tx, bookingId);
     await recalc(tx, ctx.tenant.id, bookingId, ctx.actor);
     return { id: itemId };
   });
@@ -667,33 +682,24 @@ export async function getItinerary(ctx: Ctx, bookingId: string) {
   return itineraryFor(ctx.db, bookingId, ctx.user.locale);
 }
 
-// BKG-13: signed, expiring, read-only link. Contains no passport data; tokens are HMAC'd with HMAC_KEY.
+// BKG-13: signed, expiring, read-only link. Contains no passport data.
 const LINK_TTL_DAYS = 30;
-const sign = (payload: string) => createHmac("sha256", env().HMAC_KEY).update(`itinerary:${payload}`).digest("base64url");
 
 export async function createItineraryLink(ctx: Ctx, bookingId: string) {
   const b = await loadBooking(ctx, bookingId);
-  const exp = Math.floor(Date.now() / 1000) + LINK_TTL_DAYS * 86_400;
-  const payload = `${ctx.tenant.id}.${b.id}.${exp}`;
-  const token = `${Buffer.from(payload).toString("base64url")}.${sign(payload)}`;
-  await audit(ctx.db, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "itinerary.link_created", entityType: "Booking", entityId: bookingId, metadata: { expiresAt: new Date(exp * 1000).toISOString() } });
-  return { url: `${env().APP_URL}/itinerary/${token}`, expiresAt: new Date(exp * 1000) };
+  const { token, expiresAt } = createLink("itinerary", ctx.tenant.id, b.id, LINK_TTL_DAYS);
+  await audit(ctx.db, { tenantId: ctx.tenant.id, actor: ctx.actor, action: "itinerary.link_created", entityType: "Booking", entityId: bookingId, metadata: { expiresAt: expiresAt.toISOString() } });
+  return { url: `${env().APP_URL}/itinerary/${token}`, expiresAt };
 }
 
 export async function publicItinerary(token: string, locale: "ar" | "en") {
-  const [encoded, signature] = token.split(".");
-  if (!encoded || !signature) return null;
-  const payload = Buffer.from(encoded, "base64url").toString("utf8");
-  const expected = Buffer.from(sign(payload));
-  const given = Buffer.from(signature);
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
-  const [tenantId, bookingId, exp] = payload.split(".");
-  if (!tenantId || !bookingId || Number(exp) * 1000 < Date.now()) return null;
-  const db = tenantDb(tenantId);
-  const exists = await db.booking.findFirst({ where: { id: bookingId, status: { not: "CANCELLED" } }, select: { id: true } });
+  const link = verifyLink("itinerary", token);
+  if (!link) return null;
+  const db = tenantDb(link.tenantId);
+  const exists = await db.booking.findFirst({ where: { id: link.id, status: { not: "CANCELLED" } }, select: { id: true } });
   if (!exists) return null;
-  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { legalNameEn: true, legalNameAr: true, tradeNameEn: true, tradeNameAr: true, phone: true, email: true, primaryColor: true } });
-  return { agency: tenant, ...(await itineraryFor(db, bookingId, locale)) };
+  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: link.tenantId }, select: { legalNameEn: true, legalNameAr: true, tradeNameEn: true, tradeNameAr: true, phone: true, email: true, primaryColor: true } });
+  return { agency: tenant, ...(await itineraryFor(db, link.id, locale)) };
 }
 
 // ───────── Scheduled work ─────────

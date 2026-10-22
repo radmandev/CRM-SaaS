@@ -14,6 +14,13 @@ import * as suppliersRoute from "@/app/api/v1/suppliers/route";
 import * as productsRoute from "@/app/api/v1/products/route";
 import * as bookingsRoute from "@/app/api/v1/bookings/route";
 import * as lookupRoute from "@/app/api/v1/travelers/lookup/route";
+import * as quotationsRoute from "@/app/api/v1/quotations/route";
+import * as invoicesRoute from "@/app/api/v1/invoices/route";
+import * as paymentsRoute from "@/app/api/v1/payments/route";
+import * as refundsRoute from "@/app/api/v1/refunds/route";
+import * as expensesRoute from "@/app/api/v1/expenses/route";
+import * as billsRoute from "@/app/api/v1/supplier-bills/route";
+import * as reportsRoute from "@/app/api/v1/reports/[name]/route";
 import type { Role } from "@/generated/prisma/enums";
 
 // TST-06: each role against a representative route per permission (§4.7), plus branch scope and AUTH-19/23.
@@ -60,6 +67,21 @@ const cases: Case[] = [
   { name: "product:write — POST /products", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "OPERATIONS_AGENT"], run: (c) => call(productsRoute.POST as Handler, "POST", "/api/v1/products", { cookie: c, body: { type: "TOUR", code: `P${uniq().slice(0, 6)}`.toUpperCase(), nameEn: "P", defaultCost: "0", defaultSell: "0" } }) },
   { name: "booking:read — GET /bookings", allowed: ROLES, run: (c) => call(bookingsRoute.GET as Handler, "GET", "/api/v1/bookings", { cookie: c }) },
   { name: "booking:write — POST /bookings", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT"], run: (c) => call(bookingsRoute.POST as Handler, "POST", "/api/v1/bookings", { cookie: c, body: { customerId, confirmDuplicate: true } }) },
+  { name: "quotation:write — POST /quotations", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT"], run: (c) => call(quotationsRoute.POST as Handler, "POST", "/api/v1/quotations", { cookie: c, body: { customerId } }) },
+  { name: "quotation:read — GET /quotations", allowed: ROLES, run: (c) => call(quotationsRoute.GET as Handler, "GET", "/api/v1/quotations", { cookie: c }) },
+  { name: "invoice:read — GET /invoices", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT", "ACCOUNTANT"], run: (c) => call(invoicesRoute.GET as Handler, "GET", "/api/v1/invoices", { cookie: c }) },
+  { name: "invoice:issue — POST /invoices (draft)", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "ACCOUNTANT"], run: (c) => call(invoicesRoute.POST as Handler, "POST", "/api/v1/invoices", { cookie: c, body: { customerId, lines: [{ descriptionEn: "x", unitPrice: "1", discount: "0" }] } }) },
+  { name: "payment:record — POST /payments (validation reached)", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "ACCOUNTANT"], run: async (c) => {
+      const r = await call(paymentsRoute.POST as Handler, "POST", "/api/v1/payments", { cookie: c, body: { customerId, date: "2026-10-20", amount: "1", method: "CASH", financialAccountId: "00000000-0000-7000-8000-000000000000" } });
+      return { status: r.status === 422 ? 200 : r.status }; // permitted users get past authorization to the account check
+    } },
+  { name: "refund:request — GET /refunds", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT", "ACCOUNTANT"], run: (c) => call(refundsRoute.GET as Handler, "GET", "/api/v1/refunds", { cookie: c }) },
+  { name: "expense:write — GET /expenses", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "ACCOUNTANT"], run: (c) => call(expensesRoute.GET as Handler, "GET", "/api/v1/expenses", { cookie: c }) },
+  { name: "supplierbill:write — POST /supplier-bills (validation reached)", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "OPERATIONS_AGENT", "ACCOUNTANT"], run: async (c) => {
+      const r = await call(billsRoute.POST as Handler, "POST", "/api/v1/supplier-bills", { cookie: c, body: { supplierId: "00000000-0000-7000-8000-000000000000", supplierInvoiceNumber: "X", billDate: "2026-10-20", lines: [{ description: "x", amount: "1", taxAmount: "0" }] } });
+      return { status: r.status === 422 ? 200 : r.status };
+    } },
+  { name: "report:financial — GET /reports/sales", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "ACCOUNTANT"], run: (c) => call(reportsRoute.GET as Handler, "GET", "/api/v1/reports/sales?from=2026-01-01&to=2026-12-31", { cookie: c, params: { name: "sales" } }) },
   { name: "traveldoc:read — POST /travelers/lookup", allowed: ["OWNER", "ADMIN", "BRANCH_MANAGER", "SALES_AGENT", "OPERATIONS_AGENT"], run: (c) => call(lookupRoute.POST as Handler, "POST", "/api/v1/travelers/lookup", { cookie: c, body: { number: "A1234567" } }) },
 ];
 

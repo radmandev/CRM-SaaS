@@ -37,6 +37,10 @@ const schema = z
     SMTP_PASSWORD: z.string().optional(),
     SMTP_SECURE: bool.default(false),
     EMAIL_FROM: z.string().min(3),
+    // PDF rendering (D-13): path to a Chromium/Chrome binary. Without it PDFs are unavailable and say so.
+    CHROME_PATH: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+    // Local demos only: sign in without confirming the email (AUTH-05 stays on everywhere else).
+    SKIP_EMAIL_VERIFICATION: bool.default(false),
     LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   })
   .superRefine((env, ctx) => {
@@ -51,6 +55,8 @@ const schema = z
     const local = ["localhost", "127.0.0.1", "host.docker.internal"].includes(new URL(env.APP_URL).hostname);
     if (env.NODE_ENV === "production" && !env.APP_URL.startsWith("https://") && !local)
       ctx.addIssue({ code: "custom", path: ["APP_URL"], message: "must be https in production" });
+    if (env.SKIP_EMAIL_VERIFICATION && !local)
+      ctx.addIssue({ code: "custom", path: ["SKIP_EMAIL_VERIFICATION"], message: "only allowed when APP_URL is localhost" });
   });
 
 export type Env = z.infer<typeof schema>;

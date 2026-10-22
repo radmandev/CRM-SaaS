@@ -18,38 +18,15 @@ export const prisma = new Proxy({} as PrismaClient, {
   },
 });
 
-/** Every model with a tenantId column that tenant code reads or writes. A test keeps this in sync with the schema. */
-export const TENANT_MODELS = new Set<string>([
-  "Branch",
-  "Membership",
-  "MembershipBranch",
-  "Invitation",
-  "TaxRate",
-  "ExchangeRate",
-  "NumberSequence",
-  "Document",
-  "AuditLog",
-  "IdempotencyKey",
-  "Customer",
-  "CustomerContact",
-  "Traveler",
-  "TravelDocument",
-  "Interaction",
-  "Tag",
-  "CustomerTag",
-  "Supplier",
-  "SupplierContact",
-  "CommissionRule",
-  "Product",
-  "ProductComponent",
-  "Booking",
-  "BookingItem",
-  "BookingPassenger",
-  "BookingItemPassenger",
-  "BookingStatusHistory",
-  "BookingItemCancellation",
-  "BookingAmendment",
-  "ItineraryNote",
+/**
+ * Models that are NOT tenant-scoped. Everything else is scoped by tenantDb — fail closed: a new tenant table is
+ * protected even if nobody remembers to list it, and wrongly treating a global table as scoped fails loudly
+ * (unknown tenantId field) instead of leaking. A test keeps this list in sync with the schema.
+ */
+export const GLOBAL_MODELS = new Set<string>([
+  "User", "Session", "Account", "Verification", "RateLimit", "RateLimitBucket", "Plan", "Airport", "Airline",
+  // Worker-owned queue: tenantId is metadata; job handlers re-scope through tenantDb (TEN-08).
+  "Job",
 ]);
 
 export class TenantScopeViolation extends Error {}
@@ -86,7 +63,7 @@ export function tenantDb(tenantId: string) {
             scopeWhere(a, "id", tenantId);
             return query(a);
           }
-          if (!TENANT_MODELS.has(model)) return query(a);
+          if (GLOBAL_MODELS.has(model)) return query(a);
           if (operation === "create" || operation === "createMany" || operation === "createManyAndReturn") {
             a.data = scopeData(a.data, tenantId);
           } else if (operation === "upsert") {

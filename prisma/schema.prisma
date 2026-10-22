@@ -1,6 +1,6 @@
 // Schema. Conventions: SPEC.md §21.1, deviations in docs/architecture-decisions.md (ADR-03).
 // Tenant-owned models carry tenantId, @@unique([tenantId, id]) and composite FKs (TEN-01, TEN-05).
-// Their names are listed in src/server/db.ts (TENANT_MODELS); a test keeps that list in sync with this file.
+// tenantDb (src/server/db) scopes every model except GLOBAL_MODELS; a test keeps that list in sync with this file.
 
 generator client {
   provider = "prisma-client"
@@ -218,24 +218,37 @@ model Tenant {
   documentFooterAr        String?
   // { BOOKING: "BK", INVOICE: "INV", ... } — validated by Zod (NUM-03)
   numberingPrefixes       Json         @default("{}")
+  // §10.4, FIN-08, REF-01, §10.1 business settings
+  discountApprovalPercent Decimal      @default(10) @db.Decimal(7, 4)
+  expenseApprovalLimit    Decimal      @default(5000) @db.Decimal(18, 4)
+  refundSelfApproval      Boolean      @default(false)
+  quotationValidityDays   Int          @default(7)
+  quotationTermsEn        String?
+  quotationTermsAr        String?
   createdAt               DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime     @updatedAt @db.Timestamptz(3)
 
-  memberships     Membership[]
-  branches        Branch[]
-  invitations     Invitation[]
-  taxRates        TaxRate[]
-  exchangeRates   ExchangeRate[]
-  numberSequences NumberSequence[]
-  documents       Document[]
-  auditLogs       AuditLog[]
-  jobs            Job[]
-  idempotencyKeys IdempotencyKey[]
-  customers       Customer[]
-  tags            Tag[]
-  suppliers       Supplier[]
-  products        Product[]
-  bookings        Booking[]
+  memberships       Membership[]
+  branches          Branch[]
+  invitations       Invitation[]
+  taxRates          TaxRate[]
+  exchangeRates     ExchangeRate[]
+  numberSequences   NumberSequence[]
+  documents         Document[]
+  auditLogs         AuditLog[]
+  jobs              Job[]
+  idempotencyKeys   IdempotencyKey[]
+  customers         Customer[]
+  tags              Tag[]
+  suppliers         Supplier[]
+  products          Product[]
+  bookings          Booking[]
+  quotations        Quotation[]
+  invoices          Invoice[]
+  financialAccounts FinancialAccount[]
+  payments          Payment[]
+  refunds           Refund[]
+  expenseCategories ExpenseCategory[]
 
   @@map("tenant")
 }
@@ -259,6 +272,11 @@ model Branch {
   memberBranches    MembershipBranch[]
   customers         Customer[]
   bookings          Booking[]
+  quotations        Quotation[]
+  invoices          Invoice[]
+  payments          Payment[]
+  expenses          Expense[]
+  financialAccounts FinancialAccount[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -282,9 +300,10 @@ model Membership {
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
 
-  branches       MembershipBranch[]
-  ownedCustomers Customer[]         @relation("CustomerOwner")
-  ownedBookings  Booking[]          @relation("BookingOwner")
+  branches        MembershipBranch[]
+  ownedCustomers  Customer[]         @relation("CustomerOwner")
+  ownedBookings   Booking[]          @relation("BookingOwner")
+  ownedQuotations Quotation[]        @relation("QuotationOwner")
 
   @@unique([tenantId, id])
   @@unique([tenantId, userId])
@@ -343,8 +362,9 @@ model TaxRate {
   createdAt           DateTime    @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime    @updatedAt @db.Timestamptz(3)
 
-  products     Product[]
-  bookingItems BookingItem[]
+  products       Product[]
+  bookingItems   BookingItem[]
+  quotationItems QuotationItem[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -391,7 +411,10 @@ model Document {
   entityType   String
   entityId     String?  @db.Uuid
   uploadedById String   @db.Uuid
+  generated    Boolean  @default(false)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  invoicePdfs Invoice[] @relation("InvoicePdf")
 
   @@unique([tenantId, id])
   @@index([tenantId, entityType, entityId])
@@ -614,6 +637,10 @@ model Customer {
   interactions Interaction[]
   tags         CustomerTag[]
   bookings     Booking[]
+  quotations   Quotation[]
+  invoices     Invoice[]
+  payments     Payment[]
+  refunds      Refund[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -777,6 +804,10 @@ model Supplier {
   commissionRules CommissionRule[]
   products        Product[]
   bookingItems    BookingItem[]
+  quotationItems  QuotationItem[]
+  bills           SupplierBill[]
+  payments        SupplierPayment[]
+  expenses        Expense[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -852,6 +883,7 @@ model Product {
   usedIn          ProductComponent[] @relation("ComponentOf")
   commissionRules CommissionRule[]
   bookingItems    BookingItem[]
+  quotationItems  QuotationItem[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, code])
@@ -907,15 +939,26 @@ model Booking {
   createdAt          DateTime      @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime      @updatedAt @db.Timestamptz(3)
 
+  quotationId      String?    @db.Uuid
+  quotation        Quotation? @relation(fields: [tenantId, quotationId], references: [tenantId, id], onDelete: Restrict)
+  requiresApproval Boolean    @default(false)
+  approvedById     String?    @db.Uuid
+  approvedAt       DateTime?  @db.Timestamptz(3)
+
   items          BookingItem[]
   passengers     BookingPassenger[]
   history        BookingStatusHistory[]
   amendments     BookingAmendment[]
   itineraryNotes ItineraryNote[]
   interactions   Interaction[]
+  invoices       Invoice[]
+  payments       Payment[]
+  refunds        Refund[]
+  expenses       Expense[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, reference])
+  @@unique([tenantId, quotationId])
   @@index([tenantId, status])
   @@index([tenantId, travelStartDate])
   @@index([tenantId, customerId])
@@ -954,12 +997,15 @@ model BookingItem {
   pricingModel         PricingModel      @default(NET)
   details              Json
   detailsVersion       Int               @default(1)
+  invoicedQuantity     Int               @default(0)
   sortOrder            Int               @default(0)
   createdAt            DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt            DateTime          @updatedAt @db.Timestamptz(3)
 
   passengers   BookingItemPassenger[]
   cancellation BookingItemCancellation?
+  invoiceLines InvoiceLine[]
+  billLines    SupplierBillLine[]
 
   @@unique([tenantId, id])
   @@index([tenantId, bookingId])
@@ -1090,4 +1136,539 @@ model ItineraryNote {
   @@unique([tenantId, id])
   @@index([tenantId, bookingId, date])
   @@map("itinerary_note")
+}
+
+// ═════════════════════════ Phase 3: sales and operational finance (§10, §11) ═════════════════════════
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  SUPERSEDED
+  CONVERTED
+}
+
+enum InvoiceKind {
+  INVOICE
+  CREDIT_NOTE
+}
+
+enum InvoiceType {
+  STANDARD
+  SIMPLIFIED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+}
+
+enum ZatcaStatus {
+  NOT_SUBMITTED
+  PENDING
+  CLEARED
+  REPORTED
+  REJECTED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD_POS
+  ONLINE_GATEWAY
+  CHEQUE
+  OTHER
+}
+
+enum RecordStatus {
+  RECORDED
+  REVERSED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+}
+
+enum ExpenseStatus {
+  PENDING_APPROVAL
+  RECORDED
+  REJECTED
+  REVERSED
+}
+
+enum AccountType {
+  CASH
+  BANK
+  GATEWAY_CLEARING
+}
+
+model Quotation {
+  id               String          @id @default(uuid(7)) @db.Uuid
+  tenantId         String          @db.Uuid
+  tenant           Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  number           String?
+  versionNo        Int             @default(1)
+  rootId           String?         @db.Uuid
+  root             Quotation?      @relation("QuotationVersions", fields: [tenantId, rootId], references: [tenantId, id], onDelete: Restrict)
+  versions         Quotation[]     @relation("QuotationVersions")
+  customerId       String          @db.Uuid
+  customer         Customer        @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  branchId         String          @db.Uuid
+  branch           Branch          @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  ownerId          String          @db.Uuid
+  owner            Membership      @relation("QuotationOwner", fields: [tenantId, ownerId], references: [tenantId, id], onDelete: Restrict)
+  status           QuotationStatus @default(DRAFT)
+  validUntil       DateTime        @db.Date
+  currency         String          @db.Char(3)
+  exchangeRate     Decimal         @default(1) @db.Decimal(20, 10)
+  pricesIncludeTax Boolean         @default(false)
+  sellTotal        Decimal         @default(0) @db.Decimal(18, 4)
+  costTotal        Decimal         @default(0) @db.Decimal(18, 4)
+  commissionTotal  Decimal         @default(0) @db.Decimal(18, 4)
+  discountTotal    Decimal         @default(0) @db.Decimal(18, 4)
+  taxTotal         Decimal         @default(0) @db.Decimal(18, 4)
+  grandTotal       Decimal         @default(0) @db.Decimal(18, 4)
+  requiresApproval Boolean         @default(false)
+  approvedById     String?         @db.Uuid
+  approvedAt       DateTime?       @db.Timestamptz(3)
+  showItemPrices   Boolean         @default(true)
+  termsEn          String?
+  termsAr          String?
+  notes            String?
+  customerNotes    String?
+  lostReason       String?
+  lostNote         String?
+  sentAt           DateTime?       @db.Timestamptz(3)
+  acceptedAt       DateTime?       @db.Timestamptz(3)
+  acceptanceNote   String?
+  version          Int             @default(1)
+  createdById      String          @db.Uuid
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+
+  items   QuotationItem[]
+  booking Booking?
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number, versionNo])
+  @@index([tenantId, status, validUntil])
+  @@index([tenantId, customerId])
+  @@index([tenantId, branchId, createdAt(sort: Desc)])
+  @@map("quotation")
+}
+
+model QuotationItem {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  tenantId         String       @db.Uuid
+  quotationId      String       @db.Uuid
+  quotation        Quotation    @relation(fields: [tenantId, quotationId], references: [tenantId, id], onDelete: Cascade)
+  serviceType      ServiceType
+  productId        String?      @db.Uuid
+  product          Product?     @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+  supplierId       String?      @db.Uuid
+  supplier         Supplier?    @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Restrict)
+  description      String
+  startDate        DateTime     @db.Date
+  endDate          DateTime     @db.Date
+  quantity         Int          @default(1)
+  costAmount       Decimal      @default(0) @db.Decimal(18, 4)
+  sellAmount       Decimal      @default(0) @db.Decimal(18, 4)
+  commissionAmount Decimal      @default(0) @db.Decimal(18, 4)
+  serviceFeeAmount Decimal      @default(0) @db.Decimal(18, 4)
+  discountAmount   Decimal      @default(0) @db.Decimal(18, 4)
+  taxRateId        String?      @db.Uuid
+  taxRate          TaxRate?     @relation(fields: [tenantId, taxRateId], references: [tenantId, id], onDelete: Restrict)
+  taxRateSnapshot  Json?
+  taxBasis         TaxBasis     @default(FULL_AMOUNT)
+  taxAmount        Decimal      @default(0) @db.Decimal(18, 4)
+  pricingModel     PricingModel @default(NET)
+  details          Json
+  detailsVersion   Int          @default(1)
+  sortOrder        Int          @default(0)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, quotationId])
+  @@map("quotation_item")
+}
+
+model Invoice {
+  id               String        @id @default(uuid(7)) @db.Uuid
+  tenantId         String        @db.Uuid
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind             InvoiceKind   @default(INVOICE)
+  type             InvoiceType
+  number           String?
+  status           InvoiceStatus @default(DRAFT)
+  issuedAt         DateTime?     @db.Timestamptz(3)
+  supplyDate       DateTime?     @db.Date
+  dueDate          DateTime?     @db.Date
+  customerId       String        @db.Uuid
+  customer         Customer      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  customerSnapshot Json?
+  sellerSnapshot   Json?
+  branchId         String        @db.Uuid
+  branch           Branch        @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  bookingId        String?       @db.Uuid
+  booking          Booking?      @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  originalId       String?       @db.Uuid
+  original         Invoice?      @relation("CreditNotes", fields: [tenantId, originalId], references: [tenantId, id], onDelete: Restrict)
+  creditNotes      Invoice[]     @relation("CreditNotes")
+  reason           String?
+  currency         String        @db.Char(3)
+  exchangeRate     Decimal       @default(1) @db.Decimal(20, 10)
+  pricesIncludeTax Boolean       @default(false)
+  subtotal         Decimal       @default(0) @db.Decimal(18, 4)
+  discountTotal    Decimal       @default(0) @db.Decimal(18, 4)
+  taxableAmount    Decimal       @default(0) @db.Decimal(18, 4)
+  taxAmount        Decimal       @default(0) @db.Decimal(18, 4)
+  total            Decimal       @default(0) @db.Decimal(18, 4)
+  baseTotal        Decimal       @default(0) @db.Decimal(18, 4)
+  amountPaid       Decimal       @default(0) @db.Decimal(18, 4)
+  amountCredited   Decimal       @default(0) @db.Decimal(18, 4)
+  // ZAT-01: Phase 2 fields exist from day one; hash/signature are filled once e-invoicing integration exists.
+  zatcaUuid        String?       @db.Uuid
+  icv              Int?
+  previousHash     String?
+  invoiceHash      String?
+  qrPayload        String?
+  zatcaStatus      ZatcaStatus   @default(NOT_SUBMITTED)
+  pdfDocumentId    String?       @db.Uuid
+  pdfDocument      Document?     @relation("InvoicePdf", fields: [tenantId, pdfDocumentId], references: [tenantId, id], onDelete: Restrict)
+  notes            String?
+  createdById      String        @db.Uuid
+  issuedById       String?       @db.Uuid
+  version          Int           @default(1)
+  createdAt        DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime      @updatedAt @db.Timestamptz(3)
+
+  lines       InvoiceLine[]
+  allocations PaymentAllocation[]
+  refunds     Refund[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, kind, number])
+  @@unique([tenantId, zatcaUuid])
+  @@unique([tenantId, icv])
+  @@index([tenantId, customerId, issuedAt])
+  @@index([tenantId, status, dueDate])
+  @@index([tenantId, bookingId])
+  @@map("invoice")
+}
+
+model InvoiceLine {
+  id              String        @id @default(uuid(7)) @db.Uuid
+  tenantId        String        @db.Uuid
+  invoiceId       String        @db.Uuid
+  invoice         Invoice       @relation(fields: [tenantId, invoiceId], references: [tenantId, id], onDelete: Cascade)
+  bookingItemId   String?       @db.Uuid
+  bookingItem     BookingItem?  @relation(fields: [tenantId, bookingItemId], references: [tenantId, id], onDelete: Restrict)
+  originalLineId  String?       @db.Uuid
+  originalLine    InvoiceLine?  @relation("CreditedLines", fields: [tenantId, originalLineId], references: [tenantId, id], onDelete: Restrict)
+  creditLines     InvoiceLine[] @relation("CreditedLines")
+  descriptionEn   String
+  descriptionAr   String?
+  quantity        Decimal       @default(1) @db.Decimal(18, 4)
+  unitPrice       Decimal       @db.Decimal(18, 4)
+  discount        Decimal       @default(0) @db.Decimal(18, 4)
+  taxRateId       String?       @db.Uuid
+  taxRateSnapshot Json
+  netAmount       Decimal       @db.Decimal(18, 4)
+  taxAmount       Decimal       @db.Decimal(18, 4)
+  totalAmount     Decimal       @db.Decimal(18, 4)
+  sortOrder       Int           @default(0)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, invoiceId])
+  @@index([tenantId, bookingItemId])
+  @@map("invoice_line")
+}
+
+model FinancialAccount {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  tenantId       String      @db.Uuid
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  name           String
+  type           AccountType
+  currency       String      @db.Char(3)
+  ibanEnc        String?
+  ibanLast4      String?     @db.VarChar(4)
+  branchId       String?     @db.Uuid
+  branch         Branch?     @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  openingBalance Decimal     @default(0) @db.Decimal(18, 4)
+  active         Boolean     @default(true)
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+
+  payments         Payment[]
+  refunds          Refund[]
+  supplierPayments SupplierPayment[]
+  expenses         Expense[]
+  transfersOut     AccountTransfer[] @relation("TransferFrom")
+  transfersIn      AccountTransfer[] @relation("TransferTo")
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, name])
+  @@map("financial_account")
+}
+
+model AccountTransfer {
+  id            String           @id @default(uuid(7)) @db.Uuid
+  tenantId      String           @db.Uuid
+  fromAccountId String           @db.Uuid
+  fromAccount   FinancialAccount @relation("TransferFrom", fields: [tenantId, fromAccountId], references: [tenantId, id], onDelete: Restrict)
+  toAccountId   String           @db.Uuid
+  toAccount     FinancialAccount @relation("TransferTo", fields: [tenantId, toAccountId], references: [tenantId, id], onDelete: Restrict)
+  date          DateTime         @db.Date
+  amount        Decimal          @db.Decimal(18, 4)
+  fee           Decimal          @default(0) @db.Decimal(18, 4)
+  reference     String?
+  createdById   String           @db.Uuid
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@map("account_transfer")
+}
+
+model Payment {
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  tenantId           String           @db.Uuid
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  number             String
+  customerId         String           @db.Uuid
+  customer           Customer         @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  branchId           String           @db.Uuid
+  branch             Branch           @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  bookingId          String?          @db.Uuid
+  booking            Booking?         @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  date               DateTime         @db.Date
+  amount             Decimal          @db.Decimal(18, 4)
+  currency           String           @db.Char(3)
+  exchangeRate       Decimal          @default(1) @db.Decimal(20, 10)
+  baseAmount         Decimal          @db.Decimal(18, 4)
+  method             PaymentMethod
+  reference          String?
+  financialAccountId String           @db.Uuid
+  financialAccount   FinancialAccount @relation(fields: [tenantId, financialAccountId], references: [tenantId, id], onDelete: Restrict)
+  status             RecordStatus     @default(RECORDED)
+  reversedById       String?          @db.Uuid
+  reversedAt         DateTime?        @db.Timestamptz(3)
+  reversalReason     String?
+  notes              String?
+  createdById        String           @db.Uuid
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(3)
+
+  allocations PaymentAllocation[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@index([tenantId, customerId, date])
+  @@index([tenantId, bookingId])
+  @@map("payment")
+}
+
+model PaymentAllocation {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @db.Uuid
+  paymentId  String    @db.Uuid
+  payment    Payment   @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  invoiceId  String    @db.Uuid
+  invoice    Invoice   @relation(fields: [tenantId, invoiceId], references: [tenantId, id], onDelete: Restrict)
+  amount     Decimal   @db.Decimal(18, 4)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  releasedAt DateTime? @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, invoiceId])
+  @@index([tenantId, paymentId])
+  @@map("payment_allocation")
+}
+
+model Refund {
+  id                 String            @id @default(uuid(7)) @db.Uuid
+  tenantId           String            @db.Uuid
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  number             String
+  customerId         String            @db.Uuid
+  customer           Customer          @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  bookingId          String?           @db.Uuid
+  booking            Booking?          @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  creditNoteId       String?           @db.Uuid
+  creditNote         Invoice?          @relation(fields: [tenantId, creditNoteId], references: [tenantId, id], onDelete: Restrict)
+  amount             Decimal           @db.Decimal(18, 4)
+  currency           String            @db.Char(3)
+  method             PaymentMethod
+  reason             String
+  status             RefundStatus      @default(REQUESTED)
+  requestedById      String            @db.Uuid
+  approvedById       String?           @db.Uuid
+  approvedAt         DateTime?         @db.Timestamptz(3)
+  decisionNote       String?
+  paidAt             DateTime?         @db.Date
+  reference          String?
+  financialAccountId String?           @db.Uuid
+  financialAccount   FinancialAccount? @relation(fields: [tenantId, financialAccountId], references: [tenantId, id], onDelete: Restrict)
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status])
+  @@map("refund")
+}
+
+model SupplierBill {
+  id                    String       @id @default(uuid(7)) @db.Uuid
+  tenantId              String       @db.Uuid
+  supplierId            String       @db.Uuid
+  supplier              Supplier     @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Restrict)
+  supplierInvoiceNumber String
+  billDate              DateTime     @db.Date
+  dueDate               DateTime?    @db.Date
+  currency              String       @db.Char(3)
+  exchangeRate          Decimal      @default(1) @db.Decimal(20, 10)
+  subtotal              Decimal      @db.Decimal(18, 4)
+  taxAmount             Decimal      @default(0) @db.Decimal(18, 4)
+  total                 Decimal      @db.Decimal(18, 4)
+  baseTotal             Decimal      @db.Decimal(18, 4)
+  amountPaid            Decimal      @default(0) @db.Decimal(18, 4)
+  status                RecordStatus @default(RECORDED)
+  reversedById          String?      @db.Uuid
+  reversedAt            DateTime?    @db.Timestamptz(3)
+  reversalReason        String?
+  notes                 String?
+  createdById           String       @db.Uuid
+  createdAt             DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime     @updatedAt @db.Timestamptz(3)
+
+  lines       SupplierBillLine[]
+  allocations SupplierPaymentAllocation[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, supplierId, supplierInvoiceNumber])
+  @@index([tenantId, billDate])
+  @@map("supplier_bill")
+}
+
+model SupplierBillLine {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  tenantId      String       @db.Uuid
+  billId        String       @db.Uuid
+  bill          SupplierBill @relation(fields: [tenantId, billId], references: [tenantId, id], onDelete: Restrict)
+  bookingItemId String?      @db.Uuid
+  bookingItem   BookingItem? @relation(fields: [tenantId, bookingItemId], references: [tenantId, id], onDelete: Restrict)
+  description   String
+  amount        Decimal      @db.Decimal(18, 4)
+  taxAmount     Decimal      @default(0) @db.Decimal(18, 4)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, billId])
+  @@index([tenantId, bookingItemId])
+  @@map("supplier_bill_line")
+}
+
+model SupplierPayment {
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  tenantId           String           @db.Uuid
+  number             String
+  supplierId         String           @db.Uuid
+  supplier           Supplier         @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Restrict)
+  date               DateTime         @db.Date
+  amount             Decimal          @db.Decimal(18, 4)
+  currency           String           @db.Char(3)
+  exchangeRate       Decimal          @default(1) @db.Decimal(20, 10)
+  baseAmount         Decimal          @db.Decimal(18, 4)
+  method             PaymentMethod
+  reference          String?
+  financialAccountId String           @db.Uuid
+  financialAccount   FinancialAccount @relation(fields: [tenantId, financialAccountId], references: [tenantId, id], onDelete: Restrict)
+  status             RecordStatus     @default(RECORDED)
+  reversedById       String?          @db.Uuid
+  reversedAt         DateTime?        @db.Timestamptz(3)
+  reversalReason     String?
+  createdById        String           @db.Uuid
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(3)
+
+  allocations SupplierPaymentAllocation[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@index([tenantId, supplierId, date])
+  @@map("supplier_payment")
+}
+
+model SupplierPaymentAllocation {
+  id         String          @id @default(uuid(7)) @db.Uuid
+  tenantId   String          @db.Uuid
+  paymentId  String          @db.Uuid
+  payment    SupplierPayment @relation(fields: [tenantId, paymentId], references: [tenantId, id], onDelete: Restrict)
+  billId     String          @db.Uuid
+  bill       SupplierBill    @relation(fields: [tenantId, billId], references: [tenantId, id], onDelete: Restrict)
+  amount     Decimal         @db.Decimal(18, 4)
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+  releasedAt DateTime?       @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, billId])
+  @@map("supplier_payment_allocation")
+}
+
+model ExpenseCategory {
+  id       String    @id @default(uuid(7)) @db.Uuid
+  tenantId String    @db.Uuid
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  nameEn   String
+  nameAr   String
+  active   Boolean   @default(true)
+  expenses Expense[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, nameEn])
+  @@map("expense_category")
+}
+
+model Expense {
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  tenantId           String           @db.Uuid
+  number             String
+  date               DateTime         @db.Date
+  branchId           String           @db.Uuid
+  branch             Branch           @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict)
+  categoryId         String           @db.Uuid
+  category           ExpenseCategory  @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict)
+  description        String
+  amount             Decimal          @db.Decimal(18, 4)
+  taxAmount          Decimal          @default(0) @db.Decimal(18, 4)
+  currency           String           @db.Char(3)
+  exchangeRate       Decimal          @default(1) @db.Decimal(20, 10)
+  baseAmount         Decimal          @db.Decimal(18, 4)
+  financialAccountId String           @db.Uuid
+  financialAccount   FinancialAccount @relation(fields: [tenantId, financialAccountId], references: [tenantId, id], onDelete: Restrict)
+  payee              String?
+  supplierId         String?          @db.Uuid
+  supplier           Supplier?        @relation(fields: [tenantId, supplierId], references: [tenantId, id], onDelete: Restrict)
+  bookingId          String?          @db.Uuid
+  booking            Booking?         @relation(fields: [tenantId, bookingId], references: [tenantId, id], onDelete: Restrict)
+  status             ExpenseStatus
+  approvedById       String?          @db.Uuid
+  approvedAt         DateTime?        @db.Timestamptz(3)
+  reversedById       String?          @db.Uuid
+  reversedAt         DateTime?        @db.Timestamptz(3)
+  reversalReason     String?
+  createdById        String           @db.Uuid
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@index([tenantId, date])
+  @@map("expense")
 }

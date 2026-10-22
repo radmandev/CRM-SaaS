@@ -28,7 +28,7 @@ function createAuth() {
   disabledPaths: ["/sign-up/email", "/update-user", "/update-session", "/change-email", "/delete-user", "/sign-in/social", "/link-social"],
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true, // AUTH-05
+    requireEmailVerification: !e.SKIP_EMAIL_VERIFICATION, // AUTH-05 (skip is refused unless APP_URL is local)
     minPasswordLength: 12,
     maxPasswordLength: 128,
     autoSignIn: false,
@@ -43,8 +43,8 @@ function createAuth() {
     },
   },
   emailVerification: {
-    sendOnSignUp: true,
-    sendOnSignIn: true,
+    sendOnSignUp: !e.SKIP_EMAIL_VERIFICATION,
+    sendOnSignIn: !e.SKIP_EMAIL_VERIFICATION,
     autoSignInAfterVerification: true,
     expiresIn: 24 * 3600,
     sendVerificationEmail: async ({ user, url }) => {
