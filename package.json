@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "export RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2 TURBO_TASKS_AVAILABLE_PARALLELISM=2 UV_THREADPOOL_SIZE=2 && next build",
     "start": "next start",
     "worker": "node --env-file-if-exists=.env --import tsx src/worker.ts",
     "lint": "eslint",

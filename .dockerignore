@@ -9,3 +9,6 @@ coverage
 playwright-report
 test-results
 dist
+
+# .npmrc forces devDependencies for hosted builds; the image prunes them itself (npm prune --omit=dev).
+.npmrc

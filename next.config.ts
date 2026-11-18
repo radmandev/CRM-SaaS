@@ -14,6 +14,15 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   serverExternalPackages: ["@node-rs/argon2", "pino"],
+  // Shared hosting (Hostinger/CloudLinux) caps threads per account and reports 48 CPUs. By default the build
+  // sizes its thread pools, CSS-loader Node processes and static-generation workers to the CPU count, which
+  // exceeds the cap ("pthread_create: Resource temporarily unavailable"). These two settings, plus the
+  // thread-pool limits exported by `npm run build`, keep it under the cap. Every page is dynamic, so one
+  // static-generation worker costs nothing.
+  experimental: {
+    turbopackPluginRuntimeStrategy: "workerThreads",
+    cpus: 1,
+  },
   turbopack: {
     rules: {
       "*.css": { loaders: ["@tailwindcss/turbopack"], as: "*.css" },
